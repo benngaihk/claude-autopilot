@@ -51,6 +51,358 @@ autopilot_start_time: float = 0.0  # timestamp when autopilot was started
 # ── Real-time todos captured from stream-json TodoWrite events ──────────────
 realtime_todos: list[dict] = []
 
+# ── Plan/Task state (PRD-driven review board) ───────────────────────────────
+plan_status: str = "idle"  # idle | planning | done | error
+plan_error: str = ""
+plan_pid: int | None = None
+task_processes: dict[str, int] = {}  # task_id → PID
+executing_task_id: str | None = None  # currently executing task (serial)
+
+
+# ── Task Store Helpers (PRD-driven review board) ────────────────────────────
+def _task_store_dir(workspace: str) -> Path:
+    """Get/create the .autopilot/tasks/ directory for a workspace."""
+    d = Path(workspace) / ".autopilot" / "tasks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _read_task_store(tasks_dir: Path) -> list[dict]:
+    """Read all task JSON files from the tasks directory, sorted by ID."""
+    tasks = []
+    if not tasks_dir.is_dir():
+        return tasks
+    for f in sorted(tasks_dir.iterdir()):
+        if f.suffix == ".json":
+            try:
+                data = json.loads(f.read_text())
+                if isinstance(data, dict) and "id" in data:
+                    tasks.append(data)
+            except (json.JSONDecodeError, OSError):
+                continue
+    return tasks
+
+
+def _read_task(task_id: str, tasks_dir: Path) -> dict | None:
+    """Read a single task by ID."""
+    path = tasks_dir / f"{task_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_task(task: dict, tasks_dir: Path):
+    """Write a single task to its JSON file."""
+    path = tasks_dir / f"{task['id']}.json"
+    path.write_text(json.dumps(task, indent=2, ensure_ascii=False))
+
+
+def _get_changed_files(workspace: str) -> list[str]:
+    """Get list of changed files via git diff."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only"],
+            capture_output=True, text=True, cwd=workspace, timeout=10,
+        )
+        files = [f for f in result.stdout.strip().splitlines() if f.strip()]
+        # Also check staged files
+        result2 = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, cwd=workspace, timeout=10,
+        )
+        staged = [f for f in result2.stdout.strip().splitlines() if f.strip()]
+        # Also check untracked files
+        result3 = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True, text=True, cwd=workspace, timeout=10,
+        )
+        untracked = [f for f in result3.stdout.strip().splitlines() if f.strip()]
+        return list(dict.fromkeys(files + staged + untracked))  # deduplicate, keep order
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+
+def _parse_plan_output(text: str) -> list[dict]:
+    """Parse Claude planning output into task list.
+
+    Tries to extract a JSON array of tasks from the output.
+    Falls back to extracting markdown task items.
+    """
+    # Try to find JSON array in the text
+    # Look for ```json ... ``` blocks first
+    json_match = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(1))
+            if isinstance(data, list):
+                return _normalize_tasks(data)
+        except json.JSONDecodeError:
+            pass
+
+    # Try to find raw JSON array
+    bracket_match = re.search(r"\[\s*\{.*?\}\s*\]", text, re.DOTALL)
+    if bracket_match:
+        try:
+            data = json.loads(bracket_match.group(0))
+            if isinstance(data, list):
+                return _normalize_tasks(data)
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: parse markdown-style task list
+    tasks = []
+    task_id = 0
+    for line in text.splitlines():
+        m = re.match(r"^\s*[-*]\s+\*?\*?(?:TASK-\d+)?:?\s*\*?\*?\s*(.+)", line.strip())
+        if m and len(m.group(1).strip()) > 5:
+            task_id += 1
+            tasks.append({
+                "id": f"TASK-{task_id:03d}",
+                "subject": m.group(1).strip().rstrip("*"),
+                "prd": "",
+                "status": "pending",
+                "dependencies": [],
+                "changed_files": [],
+                "test_result": None,
+                "test_output": "",
+                "committed": False,
+                "commit_hash": "",
+            })
+    return tasks
+
+
+def _normalize_tasks(data: list) -> list[dict]:
+    """Normalize parsed task data into standard format."""
+    tasks = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        tid = item.get("id", f"TASK-{i+1:03d}")
+        if not tid.startswith("TASK-"):
+            tid = f"TASK-{i+1:03d}"
+        tasks.append({
+            "id": tid,
+            "subject": item.get("subject", item.get("title", item.get("name", f"Task {i+1}"))),
+            "prd": item.get("prd", item.get("description", "")),
+            "status": "pending",
+            "dependencies": item.get("dependencies", []),
+            "changed_files": [],
+            "test_result": None,
+            "test_output": "",
+            "committed": False,
+            "commit_hash": "",
+        })
+    return tasks
+
+
+async def _run_planning(goal: str, workspace: str):
+    """Run planning phase: claude -p with --max-turns 3, read-only analysis."""
+    global plan_status, plan_error, plan_pid
+
+    plan_status = "planning"
+    plan_error = ""
+    await broadcast({"type": "plan_progress", "message": "Starting planning..."})
+
+    tasks_dir = _task_store_dir(workspace)
+
+    planning_prompt = f"""You are a technical project planner. Analyze the following goal and the codebase at {workspace}.
+
+GOAL: {goal}
+
+OUTPUT FORMAT: Return ONLY a JSON array (wrapped in ```json ... ```) of tasks. Each task object must have:
+- "id": "TASK-001", "TASK-002", etc.
+- "subject": short title
+- "prd": detailed PRD in markdown (## Objective, ## Requirements, ## Acceptance Criteria, ## Technical Notes)
+- "dependencies": array of task IDs this depends on (e.g. ["TASK-001"])
+
+RULES:
+- Break the goal into 3-8 focused tasks
+- Each task should be independently implementable
+- Order tasks by dependency (earlier tasks first)
+- Write clear, actionable PRDs
+- Do NOT write any code, only plan
+
+Return the JSON array now:"""
+
+    try:
+        env = {**os.environ}
+        env.pop("CLAUDECODE", None)
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", planning_prompt,
+            "--max-turns", "3",
+            "--output-format", "text",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace,
+            env=env,
+        )
+        plan_pid = proc.pid
+        stdout, stderr = await proc.communicate()
+        plan_pid = None
+
+        output = stdout.decode(errors="replace")
+        if proc.returncode != 0:
+            plan_status = "error"
+            plan_error = stderr.decode(errors="replace")[:500] or "Planning process failed"
+            await broadcast({"type": "plan_error", "message": plan_error})
+            return
+
+        # Parse output into tasks
+        parsed = _parse_plan_output(output)
+        if not parsed:
+            plan_status = "error"
+            plan_error = "Failed to parse planning output into tasks"
+            await broadcast({"type": "plan_error", "message": plan_error})
+            return
+
+        # Write tasks to disk
+        for task in parsed:
+            _write_task(task, tasks_dir)
+
+        plan_status = "done"
+        await broadcast({"type": "plan_complete", "tasks": [t["id"] for t in parsed]})
+
+    except Exception as e:
+        plan_pid = None
+        plan_status = "error"
+        plan_error = str(e)
+        await broadcast({"type": "plan_error", "message": plan_error})
+
+
+async def _run_task_execution(task_id: str, workspace: str):
+    """Run execution phase for a single task."""
+    global executing_task_id
+
+    tasks_dir = _task_store_dir(workspace)
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return
+
+    executing_task_id = task_id
+    task["status"] = "in_progress"
+    _write_task(task, tasks_dir)
+    await broadcast({"type": "task_status", "task_id": task_id, "status": "in_progress"})
+
+    # Build context from completed tasks
+    all_tasks = _read_task_store(tasks_dir)
+    completed_context = ""
+    for t in all_tasks:
+        if t["status"] == "completed" and t["id"] != task_id:
+            completed_context += f"\n- {t['id']}: {t['subject']} (files: {', '.join(t.get('changed_files', []))})"
+
+    execution_prompt = f"""You are a software engineer. Implement the following task in the workspace at {workspace}.
+
+TASK: {task['id']} — {task['subject']}
+
+PRD:
+{task.get('prd', 'No PRD provided.')}
+
+{'COMPLETED TASKS (for context):' + completed_context if completed_context else ''}
+
+RULES:
+- Implement the task according to the PRD
+- Write clean, production-quality code
+- Follow existing code patterns and conventions
+- Do NOT commit changes (the user will commit manually)
+- Do NOT modify unrelated files
+
+Begin implementation:"""
+
+    try:
+        env = {**os.environ}
+        env.pop("CLAUDECODE", None)
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", execution_prompt,
+            "--max-turns", "100",
+            "--output-format", "stream-json",
+            "--dangerously-skip-permissions",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace,
+            env=env,
+        )
+        task_processes[task_id] = proc.pid
+
+        # Stream output and broadcast activity
+        async for line in proc.stdout:
+            decoded = line.decode(errors="replace").strip()
+            if not decoded:
+                continue
+            activity = _parse_stream_event(decoded)
+            if activity:
+                activity["timestamp"] = datetime.now().strftime("%H:%M:%S")
+                activity["task_id"] = task_id
+                await broadcast({"type": "task_activity", **activity})
+
+        await proc.wait()
+        task_processes.pop(task_id, None)
+
+        # Get changed files
+        changed = _get_changed_files(workspace)
+        task = _read_task(task_id, tasks_dir)
+        if task:
+            task["changed_files"] = changed
+
+            # Auto-run tests
+            task["status"] = "testing"
+            _write_task(task, tasks_dir)
+            await broadcast({"type": "task_status", "task_id": task_id, "status": "testing"})
+            await broadcast({"type": "task_test", "task_id": task_id})
+
+            test_passed, test_output = await _run_task_tests(workspace)
+            task = _read_task(task_id, tasks_dir)
+            if task:
+                task["test_result"] = "passed" if test_passed else "failed"
+                task["test_output"] = test_output
+                task["status"] = "completed" if test_passed else "failed"
+                _write_task(task, tasks_dir)
+                await broadcast({
+                    "type": "task_test_done",
+                    "task_id": task_id,
+                    "passed": test_passed,
+                })
+                await broadcast({
+                    "type": "task_status",
+                    "task_id": task_id,
+                    "status": task["status"],
+                })
+
+    except Exception as e:
+        task_processes.pop(task_id, None)
+        task = _read_task(task_id, tasks_dir)
+        if task:
+            task["status"] = "failed"
+            task["test_output"] = str(e)
+            _write_task(task, tasks_dir)
+            await broadcast({"type": "task_status", "task_id": task_id, "status": "failed"})
+    finally:
+        executing_task_id = None
+
+
+async def _run_task_tests(workspace: str) -> tuple[bool, str]:
+    """Run pytest test_self.py -v and return (passed, output)."""
+    test_file = Path(workspace) / "test_self.py"
+    if not test_file.is_file():
+        return True, "No test_self.py found, skipping tests."
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "python", "-m", "pytest", str(test_file), "-v", "--tb=short",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=workspace,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        output = stdout.decode(errors="replace")
+        return proc.returncode == 0, output
+    except asyncio.TimeoutError:
+        return False, "Test timed out after 120 seconds."
+    except Exception as e:
+        return False, f"Test error: {e}"
+
 
 # ── Workspace Helpers ────────────────────────────────────────────────────────
 def parse_progress_tasks(workspace_path: str) -> list[dict]:
@@ -705,6 +1057,207 @@ async def api_save_summary(req: SaveSummaryRequest):
 async def api_recent_summaries(count: int = 3):
     """Get N most recent session summaries."""
     return {"content": get_recent_summaries(min(count, 10))}
+
+
+# ── Plan & Task API (PRD-driven review board) ────────────────────────────────
+@app.get("/api/plan/status")
+async def api_plan_status():
+    """Return current planning status."""
+    return {"status": plan_status, "error": plan_error}
+
+
+class PlanGenerateRequest(BaseModel):
+    goal: str
+    workspace: str
+
+
+@app.post("/api/plan/generate")
+async def api_plan_generate(req: PlanGenerateRequest):
+    """Start planning phase — generate task cards + PRDs."""
+    global plan_status
+    if plan_status == "planning":
+        return {"ok": False, "error": "Planning already in progress"}
+    workspace_path = Path(req.workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        return {"ok": False, "error": f"Workspace not found: {req.workspace}"}
+    save_recent_workspace(str(workspace_path))
+    # Reset state
+    plan_status = "idle"
+    # Start planning in background
+    asyncio.create_task(_run_planning(req.goal, str(workspace_path)))
+    return {"ok": True}
+
+
+@app.get("/api/plan/tasks")
+async def api_plan_tasks(workspace: str = ""):
+    """Read all tasks from .autopilot/tasks/*.json."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    return _read_task_store(tasks_dir)
+
+
+@app.get("/api/plan/tasks/{task_id}")
+async def api_plan_task_detail(task_id: str, workspace: str = ""):
+    """Read a single task detail."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return {"error": "Task not found"}
+    return task
+
+
+class TaskUpdateRequest(BaseModel):
+    prd: str | None = None
+    status: str | None = None
+    subject: str | None = None
+
+
+@app.put("/api/plan/tasks/{task_id}")
+async def api_plan_task_update(task_id: str, req: TaskUpdateRequest, workspace: str = ""):
+    """Update a task's PRD or status."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return {"error": "Task not found"}
+    if req.prd is not None:
+        task["prd"] = req.prd
+    if req.status is not None:
+        task["status"] = req.status
+    if req.subject is not None:
+        task["subject"] = req.subject
+    _write_task(task, tasks_dir)
+    await broadcast({"type": "task_status", "task_id": task_id, "status": task["status"]})
+    return {"ok": True, "task": task}
+
+
+@app.post("/api/plan/tasks/{task_id}/execute")
+async def api_plan_task_execute(task_id: str, workspace: str = ""):
+    """Start execution of a single task."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return {"error": "Task not found"}
+    if executing_task_id:
+        return {"ok": False, "error": f"Task {executing_task_id} is already executing. Only one task at a time."}
+    # Check dependencies
+    all_tasks = _read_task_store(tasks_dir)
+    task_map = {t["id"]: t for t in all_tasks}
+    for dep_id in task.get("dependencies", []):
+        dep = task_map.get(dep_id)
+        if dep and dep["status"] != "completed":
+            return {"ok": False, "error": f"Dependency {dep_id} is not completed yet."}
+    # Launch execution in background
+    asyncio.create_task(_run_task_execution(task_id, str(resolved)))
+    return {"ok": True}
+
+
+@app.post("/api/plan/tasks/{task_id}/test")
+async def api_plan_task_test(task_id: str, workspace: str = ""):
+    """Manually trigger tests for a task."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return {"error": "Task not found"}
+
+    task["status"] = "testing"
+    _write_task(task, tasks_dir)
+    await broadcast({"type": "task_test", "task_id": task_id})
+
+    passed, output = await _run_task_tests(str(resolved))
+    task = _read_task(task_id, tasks_dir)
+    if task:
+        task["test_result"] = "passed" if passed else "failed"
+        task["test_output"] = output
+        task["status"] = "completed" if passed else "failed"
+        _write_task(task, tasks_dir)
+        await broadcast({"type": "task_test_done", "task_id": task_id, "passed": passed})
+        await broadcast({"type": "task_status", "task_id": task_id, "status": task["status"]})
+
+    return {"ok": True, "passed": passed, "output": output}
+
+
+class TaskCommitRequest(BaseModel):
+    message: str = ""
+
+
+@app.post("/api/plan/tasks/{task_id}/commit")
+async def api_plan_task_commit(task_id: str, req: TaskCommitRequest, workspace: str = ""):
+    """Git add + commit for a task's changed files."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return {"error": "Task not found"}
+
+    commit_msg = req.message or f"[{task_id}] feat: {task['subject']}"
+
+    try:
+        # Stage changed files
+        changed = task.get("changed_files", [])
+        if not changed:
+            changed = _get_changed_files(str(resolved))
+        if not changed:
+            return {"ok": False, "error": "No changed files to commit"}
+
+        # git add
+        subprocess.run(
+            ["git", "add"] + changed,
+            capture_output=True, text=True, cwd=str(resolved), timeout=30,
+        )
+        # git commit
+        result = subprocess.run(
+            ["git", "commit", "-m", commit_msg],
+            capture_output=True, text=True, cwd=str(resolved), timeout=30,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "error": result.stderr[:500] or result.stdout[:500]}
+
+        # Extract commit hash
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=str(resolved), timeout=10,
+        )
+        commit_hash = hash_result.stdout.strip()
+
+        task = _read_task(task_id, tasks_dir)
+        if task:
+            task["committed"] = True
+            task["commit_hash"] = commit_hash
+            _write_task(task, tasks_dir)
+
+        return {"ok": True, "commit_hash": commit_hash}
+
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/plan/tasks/{task_id}/files")
+async def api_plan_task_files(task_id: str, workspace: str = ""):
+    """Get changed files for a task."""
+    if not workspace:
+        workspace = str(PROJECT_DIR)
+    resolved = Path(workspace).expanduser().resolve()
+    tasks_dir = resolved / ".autopilot" / "tasks"
+    task = _read_task(task_id, tasks_dir)
+    if not task:
+        return {"error": "Task not found"}
+    return {"files": task.get("changed_files", [])}
 
 
 # ── Autopilot Control ────────────────────────────────────────────────────────

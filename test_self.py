@@ -260,6 +260,115 @@ def test_api_autopilot_restart_not_running(client):
     assert "ok" in data
 
 
+# ── Plan & Task API Tests (PRD-driven review board) ──────────────────────────
+
+def test_api_plan_status(client):
+    """GET /api/plan/status should return status field."""
+    r = client.get("/api/plan/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert "status" in data
+    assert data["status"] in ("idle", "planning", "done", "error")
+
+
+def test_api_plan_tasks_list(client):
+    """GET /api/plan/tasks should return a list."""
+    r = client.get("/api/plan/tasks")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+
+
+def test_api_plan_task_crud(client):
+    """Create, read, update a task via file-based store."""
+    import json
+    import os
+    import tempfile
+
+    # Use a temporary workspace directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ws = tmpdir
+        tasks_dir = os.path.join(ws, ".autopilot", "tasks")
+        os.makedirs(tasks_dir, exist_ok=True)
+        # Write a test task JSON
+        task = {
+            "id": "TASK-TEST-001",
+            "subject": "Test task for self-test",
+            "prd": "## Objective\nTest PRD content.",
+            "status": "pending",
+            "dependencies": [],
+            "changed_files": [],
+            "test_result": None,
+            "test_output": "",
+            "committed": False,
+            "commit_hash": "",
+        }
+        with open(os.path.join(tasks_dir, "TASK-TEST-001.json"), "w") as f:
+            json.dump(task, f)
+
+        # Read tasks
+        r = client.get(f"/api/plan/tasks?workspace={tmpdir}")
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["id"] == "TASK-TEST-001"
+
+        # Read single task
+        r = client.get(f"/api/plan/tasks/TASK-TEST-001?workspace={tmpdir}")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["subject"] == "Test task for self-test"
+        assert data["prd"] == "## Objective\nTest PRD content."
+
+        # Update PRD
+        r = client.put(
+            f"/api/plan/tasks/TASK-TEST-001?workspace={tmpdir}",
+            json={"prd": "## Updated PRD"},
+        )
+        assert r.status_code == 200
+        assert r.json().get("ok") is True
+
+        # Verify update
+        r = client.get(f"/api/plan/tasks/TASK-TEST-001?workspace={tmpdir}")
+        assert r.json()["prd"] == "## Updated PRD"
+
+
+def test_api_plan_task_execute_nonexistent(client):
+    """POST /api/plan/tasks/{id}/execute should return error for nonexistent task."""
+    r = client.post("/api/plan/tasks/TASK-NONEXISTENT/execute?workspace=/tmp")
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+
+
+def test_api_plan_task_commit_nonexistent(client):
+    """POST /api/plan/tasks/{id}/commit should return error for nonexistent task."""
+    r = client.post(
+        "/api/plan/tasks/TASK-NONEXISTENT/commit?workspace=/tmp",
+        json={"message": "test"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+
+
+def test_api_plan_task_test_nonexistent(client):
+    """POST /api/plan/tasks/{id}/test should return error for nonexistent task."""
+    r = client.post("/api/plan/tasks/TASK-NONEXISTENT/test?workspace=/tmp")
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+
+
+def test_api_plan_task_files_nonexistent(client):
+    """GET /api/plan/tasks/{id}/files should return error for nonexistent task."""
+    r = client.get("/api/plan/tasks/TASK-NONEXISTENT/files?workspace=/tmp")
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+
+
 def test_websocket_connection():
     """WebSocket /ws should accept connection."""
     import websockets.sync.client as ws_client
