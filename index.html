@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Autopilot Dashboard</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <style>
+    [v-cloak] { display: none; }
+    .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
+    .fade-enter-from, .fade-leave-to { opacity: 0; }
+    .slide-enter-active, .slide-leave-active { transition: transform 0.3s ease; }
+    .slide-enter-from, .slide-leave-to { transform: translateX(100%); }
+    .kanban-col { min-height: calc(100vh - 200px); }
+    .task-card { transition: all 0.2s ease; }
+    .task-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    .markdown-body h1 { font-size: 1.5em; font-weight: bold; margin: 0.5em 0; }
+    .markdown-body h2 { font-size: 1.25em; font-weight: bold; margin: 0.5em 0; }
+    .markdown-body h3 { font-size: 1.1em; font-weight: bold; margin: 0.5em 0; }
+    .markdown-body ul { list-style: disc; padding-left: 1.5em; }
+    .markdown-body ol { list-style: decimal; padding-left: 1.5em; }
+    .markdown-body li { margin: 0.25em 0; }
+    .markdown-body code { background: #1e293b; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.9em; }
+    .markdown-body pre { background: #1e293b; padding: 1em; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; }
+    .markdown-body pre code { background: none; padding: 0; }
+    .markdown-body p { margin: 0.4em 0; }
+    .pulse { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  </style>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: {} }
+    }
+  </script>
+</head>
+<body class="dark bg-slate-900 text-slate-200 min-h-screen">
+<div id="app" v-cloak>
+  <!-- Header -->
+  <header class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between sticky top-0 z-40">
+    <div class="flex items-center gap-3">
+      <span class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+        Claude Autopilot
+      </span>
+      <span v-if="wsConnected" class="w-2 h-2 rounded-full bg-green-400" title="WebSocket connected"></span>
+      <span v-else class="w-2 h-2 rounded-full bg-red-400 pulse" title="WebSocket disconnected"></span>
+    </div>
+
+    <div class="flex items-center gap-4">
+      <!-- Session Selector -->
+      <select v-model="selectedSession" @change="loadTasks"
+              class="bg-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 border border-slate-600 focus:border-blue-500 outline-none">
+        <option value="">-- Select Session --</option>
+        <option v-for="s in sessions" :key="s.id" :value="s.id">
+          {{ s.short_id }} ({{ s.completed }}/{{ s.total_tasks }} done)
+        </option>
+      </select>
+
+      <!-- Tab Navigation -->
+      <nav class="flex gap-1">
+        <button v-for="tab in tabs" :key="tab.id"
+                @click="activeTab = tab.id"
+                :class="[
+                  'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+                  activeTab === tab.id
+                    ? 'bg-blue-600 text-white'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                ]">
+          {{ tab.label }}
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="p-4">
+    <!-- Kanban Board -->
+    <div v-if="activeTab === 'kanban'" class="flex gap-4 overflow-x-auto">
+      <div v-for="col in columns" :key="col.status"
+           class="kanban-col flex-1 min-w-[280px] max-w-[360px]">
+        <!-- Column Header -->
+        <div :class="['rounded-t-lg px-4 py-2 flex items-center justify-between', col.headerClass]">
+          <span class="font-semibold text-sm">{{ col.label }}</span>
+          <span class="bg-black/20 text-xs px-2 py-0.5 rounded-full">
+            {{ tasksByStatus(col.status).length }}
+          </span>
+        </div>
+        <!-- Cards -->
+        <div class="bg-slate-800/50 rounded-b-lg p-2 space-y-2 min-h-[200px]">
+          <div v-for="task in tasksByStatus(col.status)" :key="task.id"
+               @click="selectTask(task)"
+               :class="[
+                 'task-card rounded-lg p-3 cursor-pointer border',
+                 selectedTask?.id === task.id
+                   ? 'border-blue-500 bg-slate-700'
+                   : 'border-slate-700 bg-slate-800 hover:border-slate-500'
+               ]">
+            <div class="flex items-start justify-between gap-2">
+              <span class="text-xs font-mono text-slate-400">#{{ task.id }}</span>
+              <span v-if="task.status === 'in_progress'"
+                    class="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">
+                {{ task.activeForm || 'Working...' }}
+              </span>
+            </div>
+            <p class="text-sm font-medium mt-1 leading-snug">{{ task.subject }}</p>
+            <!-- Dependencies -->
+            <div v-if="task.blockedBy?.length" class="mt-2 flex flex-wrap gap-1">
+              <span v-for="dep in task.blockedBy" :key="dep"
+                    :class="[
+                      'text-xs px-1.5 py-0.5 rounded',
+                      isTaskCompleted(dep)
+                        ? 'bg-green-500/20 text-green-300 line-through'
+                        : 'bg-yellow-500/20 text-yellow-300'
+                    ]">
+                depends #{{ dep }}
+              </span>
+            </div>
+            <div v-if="task.blocks?.length" class="mt-1 flex flex-wrap gap-1">
+              <span v-for="b in task.blocks" :key="b"
+                    class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300">
+                blocks #{{ b }}
+              </span>
+            </div>
+          </div>
+          <div v-if="tasksByStatus(col.status).length === 0"
+               class="text-center text-slate-500 text-sm py-8">
+            No tasks
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Progress View -->
+    <div v-if="activeTab === 'progress'" class="max-w-4xl mx-auto">
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <h2 class="text-lg font-bold mb-4">Autopilot Progress</h2>
+        <div class="markdown-body text-slate-300" v-html="renderedProgress"></div>
+      </div>
+    </div>
+
+    <!-- Logs View -->
+    <div v-if="activeTab === 'logs'" class="max-w-5xl mx-auto">
+      <div class="flex gap-4">
+        <div class="w-64 shrink-0">
+          <h3 class="text-sm font-semibold text-slate-400 mb-2">Log Files</h3>
+          <div class="space-y-1">
+            <button v-for="log in logs" :key="log.name"
+                    @click="loadLog(log.name)"
+                    :class="[
+                      'w-full text-left px-3 py-2 rounded text-xs font-mono truncate transition-colors',
+                      selectedLog === log.name
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    ]">
+              {{ log.name }}
+            </button>
+            <p v-if="logs.length === 0" class="text-slate-500 text-sm px-3 py-2">No logs yet</p>
+          </div>
+        </div>
+        <div class="flex-1 bg-slate-800 rounded-lg border border-slate-700 p-4">
+          <pre class="text-xs text-slate-300 whitespace-pre-wrap font-mono max-h-[70vh] overflow-auto">{{ logContent || 'Select a log file...' }}</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Config View -->
+    <div v-if="activeTab === 'config'" class="max-w-4xl mx-auto">
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <h2 class="text-lg font-bold mb-4">CLAUDE.md</h2>
+        <div class="markdown-body text-slate-300" v-html="renderedClaudeMd"></div>
+      </div>
+    </div>
+
+    <!-- Dependency Graph -->
+    <div v-if="activeTab === 'graph'" class="max-w-5xl mx-auto">
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <h2 class="text-lg font-bold mb-4">Task Dependency Graph</h2>
+        <div v-if="tasks.length === 0" class="text-slate-500 text-center py-8">
+          Select a session to view dependency graph
+        </div>
+        <div v-else ref="mermaidContainer" class="flex justify-center overflow-auto"></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Task Detail Slide-over -->
+  <Transition name="slide">
+    <div v-if="selectedTask && activeTab === 'kanban'"
+         class="fixed top-0 right-0 h-full w-[480px] bg-slate-800 border-l border-slate-700 z-50 shadow-2xl flex flex-col">
+      <!-- Header -->
+      <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between shrink-0">
+        <div>
+          <span class="text-xs font-mono text-slate-400">#{{ selectedTask.id }}</span>
+          <h3 class="text-sm font-bold">{{ selectedTask.subject }}</h3>
+        </div>
+        <button @click="selectedTask = null"
+                class="text-slate-400 hover:text-white text-lg">&times;</button>
+      </div>
+
+      <!-- Detail Tabs -->
+      <div class="flex border-b border-slate-700 shrink-0">
+        <button v-for="dt in detailTabs" :key="dt.id"
+                @click="activeDetailTab = dt.id"
+                :class="[
+                  'px-4 py-2 text-xs font-medium transition-colors border-b-2',
+                  activeDetailTab === dt.id
+                    ? 'border-blue-500 text-blue-400'
+                    : 'border-transparent text-slate-400 hover:text-white'
+                ]">
+          {{ dt.label }}
+        </button>
+      </div>
+
+      <!-- Detail Content -->
+      <div class="flex-1 overflow-auto p-4">
+        <!-- Description -->
+        <div v-if="activeDetailTab === 'desc'">
+          <div class="text-sm text-slate-300 whitespace-pre-wrap">{{ selectedTask.description || 'No description' }}</div>
+          <div class="mt-4 space-y-2">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="text-slate-500">Status:</span>
+              <span :class="statusClass(selectedTask.status)">{{ selectedTask.status }}</span>
+            </div>
+            <div v-if="selectedTask.activeForm" class="flex items-center gap-2 text-xs">
+              <span class="text-slate-500">Active:</span>
+              <span class="text-blue-300">{{ selectedTask.activeForm }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Commits -->
+        <div v-if="activeDetailTab === 'code'">
+          <div v-if="taskCommits.length === 0" class="text-slate-500 text-sm">No commits found for this task</div>
+          <div v-for="c in taskCommits" :key="c.hash" class="mb-3 bg-slate-900 rounded p-3">
+            <div class="flex items-center gap-2">
+              <span class="font-mono text-xs text-blue-400">{{ c.hash }}</span>
+              <span class="text-xs text-slate-500">{{ c.date }}</span>
+            </div>
+            <p class="text-sm mt-1">{{ c.message }}</p>
+            <p class="text-xs text-slate-500 mt-1">{{ c.author }}</p>
+          </div>
+        </div>
+
+        <!-- Dependencies -->
+        <div v-if="activeDetailTab === 'deps'">
+          <h4 class="text-xs font-semibold text-slate-400 mb-2">Blocked By</h4>
+          <div v-if="!selectedTask.blockedBy?.length" class="text-sm text-slate-500 mb-4">None</div>
+          <div v-else class="space-y-1 mb-4">
+            <div v-for="dep in selectedTask.blockedBy" :key="dep"
+                 class="flex items-center gap-2 text-sm">
+              <span :class="isTaskCompleted(dep) ? 'text-green-400' : 'text-yellow-400'">
+                {{ isTaskCompleted(dep) ? '\u2713' : '\u25cb' }}
+              </span>
+              <span class="font-mono text-xs">#{{ dep }}</span>
+              <span class="text-slate-400">{{ getTaskSubject(dep) }}</span>
+            </div>
+          </div>
+          <h4 class="text-xs font-semibold text-slate-400 mb-2">Blocks</h4>
+          <div v-if="!selectedTask.blocks?.length" class="text-sm text-slate-500">None</div>
+          <div v-else class="space-y-1">
+            <div v-for="b in selectedTask.blocks" :key="b"
+                 class="flex items-center gap-2 text-sm">
+              <span class="font-mono text-xs">#{{ b }}</span>
+              <span class="text-slate-400">{{ getTaskSubject(b) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Transition>
+
+  <!-- Backdrop -->
+  <Transition name="fade">
+    <div v-if="selectedTask && activeTab === 'kanban'"
+         @click="selectedTask = null"
+         class="fixed inset-0 bg-black/30 z-40"></div>
+  </Transition>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
+
+createApp({
+  setup() {
+    // State
+    const sessions = ref([]);
+    const selectedSession = ref('');
+    const tasks = ref([]);
+    const selectedTask = ref(null);
+    const progress = ref('');
+    const claudeMd = ref('');
+    const logs = ref([]);
+    const selectedLog = ref('');
+    const logContent = ref('');
+    const taskCommits = ref([]);
+    const wsConnected = ref(false);
+    const activeTab = ref('kanban');
+    const activeDetailTab = ref('desc');
+    const mermaidContainer = ref(null);
+
+    const tabs = [
+      { id: 'kanban', label: 'Kanban' },
+      { id: 'progress', label: 'Progress' },
+      { id: 'graph', label: 'Graph' },
+      { id: 'logs', label: 'Logs' },
+      { id: 'config', label: 'Config' },
+    ];
+
+    const detailTabs = [
+      { id: 'desc', label: 'Description' },
+      { id: 'code', label: 'Commits' },
+      { id: 'deps', label: 'Dependencies' },
+    ];
+
+    const columns = [
+      { status: 'pending', label: 'Pending', headerClass: 'bg-slate-600' },
+      { status: 'in_progress', label: 'In Progress', headerClass: 'bg-blue-600' },
+      { status: 'completed', label: 'Completed', headerClass: 'bg-green-600' },
+      { status: 'failed', label: 'Failed', headerClass: 'bg-red-600' },
+    ];
+
+    // API helpers
+    const api = async (path) => {
+      const res = await fetch(path);
+      return res.json();
+    };
+
+    // Data loading
+    const loadSessions = async () => {
+      sessions.value = await api('/api/sessions');
+      if (!selectedSession.value && sessions.value.length > 0) {
+        selectedSession.value = sessions.value[0].id;
+        await loadTasks();
+      }
+    };
+
+    const loadTasks = async () => {
+      if (!selectedSession.value) { tasks.value = []; return; }
+      tasks.value = await api(`/api/tasks/${selectedSession.value}`);
+    };
+
+    const loadProgress = async () => {
+      const data = await api('/api/progress');
+      progress.value = data.content || '';
+    };
+
+    const loadClaudeMd = async () => {
+      const data = await api('/api/claude-md');
+      claudeMd.value = data.content || '';
+    };
+
+    const loadLogs = async () => {
+      logs.value = await api('/api/logs');
+    };
+
+    const loadLog = async (name) => {
+      selectedLog.value = name;
+      const data = await api(`/api/logs/${name}`);
+      logContent.value = data.content || '';
+    };
+
+    const loadCommits = async (taskId) => {
+      taskCommits.value = await api(`/api/commits/${taskId}`);
+    };
+
+    // Computed
+    const tasksByStatus = (status) => {
+      return tasks.value.filter(t => t.status === status);
+    };
+
+    const renderedProgress = computed(() => {
+      if (!progress.value) return '<p class="text-slate-500">No progress file found</p>';
+      return marked.parse(progress.value);
+    });
+
+    const renderedClaudeMd = computed(() => {
+      if (!claudeMd.value) return '<p class="text-slate-500">No CLAUDE.md found</p>';
+      return marked.parse(claudeMd.value);
+    });
+
+    const isTaskCompleted = (id) => {
+      const t = tasks.value.find(t => String(t.id) === String(id));
+      return t?.status === 'completed';
+    };
+
+    const getTaskSubject = (id) => {
+      const t = tasks.value.find(t => String(t.id) === String(id));
+      return t?.subject || 'Unknown';
+    };
+
+    const statusClass = (status) => {
+      const map = {
+        pending: 'text-slate-400 bg-slate-500/20 px-2 py-0.5 rounded',
+        in_progress: 'text-blue-300 bg-blue-500/20 px-2 py-0.5 rounded',
+        completed: 'text-green-300 bg-green-500/20 px-2 py-0.5 rounded',
+        failed: 'text-red-300 bg-red-500/20 px-2 py-0.5 rounded',
+      };
+      return map[status] || '';
+    };
+
+    // Task selection
+    const selectTask = async (task) => {
+      selectedTask.value = task;
+      activeDetailTab.value = 'desc';
+      await loadCommits(task.id);
+    };
+
+    // Mermaid graph
+    const renderGraph = async () => {
+      if (!mermaidContainer.value || tasks.value.length === 0) return;
+      let graph = 'graph LR\n';
+      for (const t of tasks.value) {
+        const shape = t.status === 'completed' ? `["\u2713 ${t.subject}"]`
+                    : t.status === 'in_progress' ? `(["${t.subject}"])`
+                    : `["${t.subject}"]`;
+        graph += `  T${t.id}${shape}\n`;
+        const statusStyle = t.status === 'completed' ? 'fill:#166534,stroke:#22c55e,color:#fff'
+                          : t.status === 'in_progress' ? 'fill:#1e40af,stroke:#3b82f6,color:#fff'
+                          : t.status === 'failed' ? 'fill:#991b1b,stroke:#ef4444,color:#fff'
+                          : 'fill:#334155,stroke:#64748b,color:#cbd5e1';
+        graph += `  style T${t.id} ${statusStyle}\n`;
+        if (t.blockedBy) {
+          for (const dep of t.blockedBy) {
+            graph += `  T${dep} --> T${t.id}\n`;
+          }
+        }
+      }
+      mermaidContainer.value.innerHTML = '';
+      try {
+        const { svg } = await mermaid.render('dag-' + Date.now(), graph);
+        mermaidContainer.value.innerHTML = svg;
+      } catch(e) {
+        mermaidContainer.value.innerHTML = '<p class="text-red-400">Failed to render graph</p>';
+      }
+    };
+
+    // WebSocket
+    let ws = null;
+    let wsRetryTimer = null;
+
+    const connectWs = () => {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onopen = () => { wsConnected.value = true; };
+      ws.onclose = () => {
+        wsConnected.value = false;
+        wsRetryTimer = setTimeout(connectWs, 3000);
+      };
+      ws.onmessage = async (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'file_change') {
+          await loadTasks();
+          await loadProgress();
+          await loadLogs();
+          if (activeTab.value === 'graph') await renderGraph();
+        }
+      };
+    };
+
+    // Watchers
+    watch(activeTab, async (tab) => {
+      if (tab === 'progress') await loadProgress();
+      if (tab === 'logs') await loadLogs();
+      if (tab === 'config') await loadClaudeMd();
+      if (tab === 'graph') { await nextTick(); await renderGraph(); }
+    });
+
+    // Init
+    onMounted(async () => {
+      mermaid.initialize({ startOnLoad: false, theme: 'dark', themeVariables: { darkMode: true } });
+      await loadSessions();
+      await loadProgress();
+      connectWs();
+    });
+
+    onUnmounted(() => {
+      if (ws) ws.close();
+      if (wsRetryTimer) clearTimeout(wsRetryTimer);
+    });
+
+    return {
+      sessions, selectedSession, tasks, selectedTask, progress, claudeMd,
+      logs, selectedLog, logContent, taskCommits, wsConnected,
+      activeTab, activeDetailTab, mermaidContainer,
+      tabs, detailTabs, columns,
+      loadTasks, loadLog, tasksByStatus, renderedProgress, renderedClaudeMd,
+      isTaskCompleted, getTaskSubject, statusClass, selectTask,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
