@@ -3,1118 +3,489 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Claude Autopilot Dashboard</title>
+  <title>Claude Autopilot</title>
+  <!-- Vue 3 -->
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <!-- dayjs + plugins (required by antd-vue) -->
+  <script src="https://unpkg.com/dayjs/dayjs.min.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/customParseFormat.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/weekday.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/localeData.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/weekOfYear.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/weekYear.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/advancedFormat.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/quarterOfYear.js"></script>
+  <!-- Ant Design Vue 4.x -->
+  <script src="https://unpkg.com/ant-design-vue@4.2.6/dist/antd.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/ant-design-vue@4.2.6/dist/reset.css">
   <style>
     [v-cloak] { display: none; }
-    .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
-    .fade-enter-from, .fade-leave-to { opacity: 0; }
-    .slide-enter-active, .slide-leave-active { transition: transform 0.3s ease; }
-    .slide-enter-from, .slide-leave-to { transform: translateX(100%); }
-    .kanban-col { min-height: calc(100vh - 200px); }
-    .task-card { transition: all 0.2s ease; }
-    .task-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-    .markdown-body h1 { font-size: 1.5em; font-weight: bold; margin: 0.5em 0; }
-    .markdown-body h2 { font-size: 1.25em; font-weight: bold; margin: 0.5em 0; }
-    .markdown-body h3 { font-size: 1.1em; font-weight: bold; margin: 0.5em 0; }
-    .markdown-body ul { list-style: disc; padding-left: 1.5em; }
-    .markdown-body ol { list-style: decimal; padding-left: 1.5em; }
-    .markdown-body li { margin: 0.25em 0; }
-    .markdown-body code { background: #1e293b; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.9em; }
-    .markdown-body pre { background: #1e293b; padding: 1em; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; }
-    .markdown-body pre code { background: none; padding: 0; }
-    .markdown-body p { margin: 0.4em 0; }
-    .pulse { animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #1e293b; }
-    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
-  </style>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: { extend: {} }
+    body { margin: 0; padding: 0; }
+    /* Kanban columns */
+    .kanban-wrap { display: flex; gap: 12px; padding: 16px; overflow-x: auto; flex: 1; min-height: 0; }
+    .kanban-col { flex: 1; min-width: 220px; max-width: 320px; display: flex; flex-direction: column; }
+    .kanban-col-body { flex: 1; overflow-y: auto; padding: 8px; }
+    .task-card { cursor: pointer; transition: all 0.2s ease; margin-bottom: 8px; }
+    .task-card:hover { transform: translateY(-2px); }
+    /* Live log */
+    .live-log-pre {
+      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      padding: 12px;
+      margin: 0;
+      max-height: 30vh;
+      overflow: auto;
+      color: #52c41a;
+      background: #000;
     }
-  </script>
+    /* Pulse animation */
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #141414; }
+    ::-webkit-scrollbar-thumb { background: #434343; border-radius: 3px; }
+    /* Landing page centering */
+    .landing-center { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .landing-form { width: 100%; max-width: 480px; padding: 0 24px; }
+    /* Gradient title */
+    .gradient-title {
+      background: linear-gradient(135deg, #1677ff 0%, #722ed1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      font-size: 28px;
+      font-weight: 700;
+    }
+    /* Full height layout */
+    .full-height { height: 100vh; display: flex; flex-direction: column; }
+  </style>
 </head>
-<body class="dark bg-slate-900 text-slate-200 min-h-screen">
+<body>
 <div id="app" v-cloak>
-  <!-- Header -->
-  <header class="bg-slate-800 border-b border-slate-700 px-6 py-3 flex items-center justify-between sticky top-0 z-40">
-    <div class="flex items-center gap-3">
-      <span class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-        Claude Autopilot
-      </span>
-      <span v-if="wsConnected" class="w-2 h-2 rounded-full bg-green-400" title="WebSocket connected"></span>
-      <span v-else class="w-2 h-2 rounded-full bg-red-400 pulse" title="WebSocket disconnected"></span>
-      <!-- Reconnect Toast -->
-      <transition name="fade">
-        <span v-if="showReconnectToast" class="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300">
-          Reconnected
-        </span>
-      </transition>
-      <!-- Autopilot Status -->
-      <span v-if="autopilotStatus.running"
-            class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-300 flex items-center gap-1">
-        <span class="w-1.5 h-1.5 rounded-full bg-green-400 pulse"></span> Running
-      </span>
-    </div>
+  <a-config-provider :theme="themeConfig">
 
-    <div class="flex items-center gap-4">
-      <!-- Session Selector -->
-      <select v-model="selectedSession" @change="loadTasks"
-              class="bg-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 border border-slate-600 focus:border-blue-500 outline-none">
-        <option value="">-- Select Session --</option>
-        <option v-for="s in sessions" :key="s.id" :value="s.id">
-          {{ s.short_id }} ({{ s.completed }}/{{ s.total_tasks }} done)
-        </option>
-      </select>
-
-      <!-- Tab Navigation -->
-      <nav class="flex gap-1">
-        <button v-for="tab in tabs" :key="tab.id"
-                @click="activeTab = tab.id"
-                :class="[
-                  'px-3 py-1.5 rounded text-sm font-medium transition-colors',
-                  activeTab === tab.id
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                ]">
-          {{ tab.label }}
-        </button>
-      </nav>
-    </div>
-  </header>
-
-  <main class="p-4">
-    <!-- Kanban Board -->
-    <div v-if="activeTab === 'kanban'" class="flex gap-4 overflow-x-auto">
-      <div v-for="col in columns" :key="col.status"
-           class="kanban-col flex-1 min-w-[280px] max-w-[360px]">
-        <div :class="['rounded-t-lg px-4 py-2 flex items-center justify-between', col.headerClass]">
-          <span class="font-semibold text-sm">{{ col.label }}</span>
-          <span class="bg-black/20 text-xs px-2 py-0.5 rounded-full">
-            {{ tasksByStatus(col.status).length }}
-          </span>
-        </div>
-        <div class="bg-slate-800/50 rounded-b-lg p-2 space-y-2 min-h-[200px]">
-          <div v-for="task in tasksByStatus(col.status)" :key="task.id"
-               @click="selectTask(task)"
-               :class="[
-                 'task-card rounded-lg p-3 cursor-pointer border',
-                 selectedTask?.id === task.id
-                   ? 'border-blue-500 bg-slate-700'
-                   : 'border-slate-700 bg-slate-800 hover:border-slate-500'
-               ]">
-            <div class="flex items-start justify-between gap-2">
-              <span class="text-xs font-mono text-slate-400">#{{ task.id }}</span>
-              <span v-if="task.status === 'in_progress'"
-                    class="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">
-                {{ task.activeForm || 'Working...' }}
-              </span>
-            </div>
-            <p class="text-sm font-medium mt-1 leading-snug">{{ task.subject }}</p>
-            <div v-if="task.blockedBy?.length" class="mt-2 flex flex-wrap gap-1">
-              <span v-for="dep in task.blockedBy" :key="dep"
-                    :class="[
-                      'text-xs px-1.5 py-0.5 rounded',
-                      isTaskCompleted(dep)
-                        ? 'bg-green-500/20 text-green-300 line-through'
-                        : 'bg-yellow-500/20 text-yellow-300'
-                    ]">
-                depends #{{ dep }}
-              </span>
-            </div>
-            <div v-if="task.blocks?.length" class="mt-1 flex flex-wrap gap-1">
-              <span v-for="b in task.blocks" :key="b"
-                    class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300">
-                blocks #{{ b }}
-              </span>
-            </div>
-          </div>
-          <div v-if="tasksByStatus(col.status).length === 0"
-               class="text-center text-slate-500 text-sm py-8">
-            No tasks
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Progress View -->
-    <div v-if="activeTab === 'progress'" class="max-w-4xl mx-auto">
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 class="text-lg font-bold mb-4">Autopilot Progress</h2>
-        <div class="markdown-body text-slate-300" v-html="renderedProgress"></div>
-      </div>
-    </div>
-
-    <!-- Control Panel (P2) -->
-    <div v-if="activeTab === 'control'" class="max-w-5xl mx-auto space-y-6">
-      <!-- Autopilot Control -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 class="text-lg font-bold mb-4">Autopilot Control</h2>
-        <div class="flex items-center gap-4 mb-4">
-          <div class="flex-1">
-            <input v-model="autopilotGoal" placeholder="Goal (e.g. 'Build user auth module')"
-                   class="w-full bg-slate-700 text-slate-200 text-sm rounded px-3 py-2 border border-slate-600 focus:border-blue-500 outline-none"
-                   :disabled="autopilotStatus.running">
-          </div>
-          <button v-if="!autopilotStatus.running"
-                  @click="startAutopilot"
-                  class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium transition-colors">
-            Start
-          </button>
-          <button v-else
-                  @click="stopAutopilot"
-                  class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm font-medium transition-colors">
-            Stop
-          </button>
-        </div>
-        <div class="grid grid-cols-3 gap-4 text-sm">
-          <div class="bg-slate-900 rounded p-3">
-            <span class="text-slate-500">Sessions</span>
-            <p class="text-xl font-bold">{{ autopilotStatus.session_count || 0 }}</p>
-          </div>
-          <div class="bg-slate-900 rounded p-3">
-            <span class="text-slate-500">Status</span>
-            <p class="text-xl font-bold" :class="autopilotStatus.running ? 'text-green-400' : 'text-slate-400'">
-              {{ autopilotStatus.running ? 'Running' : (autopilotStatus.status || 'idle') }}
-            </p>
-          </div>
-          <div class="bg-slate-900 rounded p-3">
-            <span class="text-slate-500">Started</span>
-            <p class="text-sm font-mono">{{ autopilotStatus.started_at ? new Date(autopilotStatus.started_at).toLocaleString() : '-' }}</p>
-          </div>
-        </div>
+  <!-- ==================== LANDING VIEW ==================== -->
+  <div v-if="view === 'landing'" class="landing-center">
+    <div class="landing-form">
+      <!-- Logo -->
+      <div style="text-align: center; margin-bottom: 40px;">
+        <h1 class="gradient-title" style="margin-bottom: 8px;">Claude Autopilot</h1>
+        <a-typography-text type="secondary" style="font-size: 14px;">
+          Select a workspace, set a goal, let Claude build it.
+        </a-typography-text>
       </div>
 
-      <!-- Live Autopilot Output -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">Live Output</h2>
-          <div class="flex items-center gap-2">
-            <label class="flex items-center gap-1 text-xs text-slate-400">
-              <input type="checkbox" v-model="autoScroll" class="rounded">
-              Auto-scroll
-            </label>
-            <button @click="autopilotLiveLog = ''; loadAutopilotLogs()"
-                    class="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600">
-              Refresh
-            </button>
-          </div>
-        </div>
-        <pre ref="liveLogEl" class="text-xs text-green-300 whitespace-pre-wrap font-mono max-h-[50vh] overflow-auto bg-black rounded p-3">{{ autopilotLiveLog || 'Autopilot output will appear here when running...' }}</pre>
-      </div>
-
-      <!-- Session Log Files -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">Session Logs</h2>
-          <select v-model="selectedLog" @change="loadLog(selectedLog)"
-                  class="bg-slate-700 text-slate-200 text-xs rounded px-2 py-1 border border-slate-600">
-            <option value="">Select log...</option>
-            <option v-for="log in logs" :key="log.name" :value="log.name">{{ log.name }}</option>
-          </select>
-        </div>
-        <pre class="text-xs text-slate-300 whitespace-pre-wrap font-mono max-h-[40vh] overflow-auto bg-slate-900 rounded p-3">{{ logContent || 'No log selected...' }}</pre>
-      </div>
-
-      <!-- Self-Test -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <div class="flex items-center gap-3">
-            <h2 class="text-lg font-bold">Self-Test</h2>
-            <span v-if="selfTestStatus === 'pass'" class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PASS</span>
-            <span v-else-if="selfTestStatus === 'fail'" class="text-xs px-2 py-0.5 rounded bg-red-500/20 text-red-300 font-medium">FAIL</span>
-          </div>
-          <button @click="runSelfTest" :disabled="selfTestRunning"
-                  :class="[
-                    'px-4 py-2 rounded text-sm font-medium transition-colors',
-                    selfTestRunning
-                      ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
-                      : 'bg-blue-600 hover:bg-blue-500 text-white'
-                  ]">
-            {{ selfTestRunning ? 'Running...' : 'Run Self-Test' }}
-          </button>
-        </div>
-        <pre ref="selfTestOutput" class="text-xs whitespace-pre-wrap font-mono max-h-[40vh] overflow-auto bg-black rounded p-3"
-             :class="selfTestStatus === 'pass' ? 'text-green-300' : selfTestStatus === 'fail' ? 'text-red-300' : 'text-slate-300'">{{ selfTestOutputText || 'Click "Run Self-Test" to verify all API endpoints...' }}</pre>
-      </div>
-
-      <!-- CLAUDE.md Editor -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">CLAUDE.md Editor</h2>
-          <div class="flex gap-2">
-            <button @click="configEditing = !configEditing"
-                    :class="[
-                      'px-3 py-1 rounded text-xs font-medium transition-colors',
-                      configEditing ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                    ]">
-              {{ configEditing ? 'Preview' : 'Edit' }}
-            </button>
-            <button v-if="configEditing" @click="saveClaudeMd"
-                    class="px-3 py-1 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors">
-              Save
-            </button>
-          </div>
-        </div>
-        <div v-if="configEditing">
-          <textarea v-model="claudeMdDraft"
-                    class="w-full h-[50vh] bg-slate-900 text-slate-300 text-sm font-mono rounded p-4 border border-slate-600 focus:border-blue-500 outline-none resize-none"></textarea>
-        </div>
-        <div v-else class="markdown-body text-slate-300 max-h-[50vh] overflow-auto" v-html="renderedClaudeMd"></div>
-      </div>
-    </div>
-
-    <!-- Logs View -->
-    <div v-if="activeTab === 'logs'" class="max-w-5xl mx-auto">
-      <div class="flex gap-4">
-        <div class="w-64 shrink-0">
-          <h3 class="text-sm font-semibold text-slate-400 mb-2">Log Files</h3>
-          <div class="space-y-1">
-            <button v-for="log in logs" :key="log.name"
-                    @click="loadLog(log.name)"
-                    :class="[
-                      'w-full text-left px-3 py-2 rounded text-xs font-mono truncate transition-colors',
-                      selectedLog === log.name
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    ]">
-              {{ log.name }}
-            </button>
-            <p v-if="logs.length === 0" class="text-slate-500 text-sm px-3 py-2">No logs yet</p>
-          </div>
-        </div>
-        <div class="flex-1 bg-slate-800 rounded-lg border border-slate-700 p-4">
-          <pre class="text-xs text-slate-300 whitespace-pre-wrap font-mono max-h-[70vh] overflow-auto">{{ logContent || 'Select a log file...' }}</pre>
-        </div>
-      </div>
-    </div>
-
-    <!-- Memory Tab -->
-    <div v-if="activeTab === 'memory'" class="max-w-6xl mx-auto space-y-6">
-      <!-- Search -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 class="text-lg font-bold mb-4">Memory Search</h2>
-        <div class="flex gap-2">
-          <input v-model="memorySearchQuery" @keyup.enter="searchMemory"
-                 placeholder="Search across all memories..."
-                 class="flex-1 bg-slate-700 text-slate-200 text-sm rounded px-3 py-2 border border-slate-600 focus:border-blue-500 outline-none">
-          <button @click="searchMemory" :disabled="memorySearching"
-                  class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium transition-colors">
-            {{ memorySearching ? 'Searching...' : 'Search' }}
-          </button>
-        </div>
-        <div v-if="memorySearchResults.length > 0" class="mt-4 space-y-2 max-h-[40vh] overflow-auto">
-          <div v-for="(r, i) in memorySearchResults" :key="i"
-               class="bg-slate-900 rounded p-3 text-sm">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-xs font-mono text-blue-400">{{ r.file }}</span>
-              <span class="text-xs text-slate-500">line {{ r.line }}</span>
-            </div>
-            <p class="text-slate-300">{{ r.content }}</p>
-          </div>
-        </div>
-        <p v-else-if="memorySearchQuery && !memorySearching && memorySearchResults.length === 0"
-           class="mt-3 text-sm text-slate-500">No results found</p>
-      </div>
-
-      <!-- Long-term Memory (MEMORY.md) -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">Long-term Memory (MEMORY.md)</h2>
-          <div class="flex gap-2">
-            <button @click="memoryEditing = !memoryEditing"
-                    :class="[
-                      'px-3 py-1 rounded text-xs font-medium transition-colors',
-                      memoryEditing ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                    ]">
-              {{ memoryEditing ? 'Preview' : 'Edit' }}
-            </button>
-            <button v-if="memoryEditing" @click="saveMemory"
-                    class="px-3 py-1 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors">
-              Save
-            </button>
-          </div>
-        </div>
-        <div v-if="memoryEditing">
-          <textarea v-model="memoryDraft"
-                    class="w-full h-[40vh] bg-slate-900 text-slate-300 text-sm font-mono rounded p-4 border border-slate-600 focus:border-blue-500 outline-none resize-none"></textarea>
-        </div>
-        <div v-else class="markdown-body text-slate-300 max-h-[40vh] overflow-auto" v-html="renderedMemory"></div>
-      </div>
-
-      <!-- Daily Logs + Quick Add -->
-      <div class="grid grid-cols-3 gap-6">
-        <div class="col-span-1">
-          <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-            <h2 class="text-lg font-bold mb-4">Daily Logs</h2>
-            <div class="space-y-1 max-h-[40vh] overflow-auto">
-              <button v-for="log in dailyLogs" :key="log.date"
-                      @click="loadDailyLog(log.date)"
-                      :class="[
-                        'w-full text-left px-3 py-2 rounded text-xs font-mono truncate transition-colors',
-                        selectedDailyLog === log.date
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-slate-900 text-slate-400 hover:bg-slate-700'
-                      ]">
-                {{ log.date }}
-                <span class="text-slate-500 ml-1">({{ (log.size / 1024).toFixed(1) }}K)</span>
-              </button>
-              <p v-if="dailyLogs.length === 0" class="text-slate-500 text-sm px-3 py-2">No daily logs yet</p>
-            </div>
-          </div>
-        </div>
-
-        <div class="col-span-2">
-          <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-            <div class="flex items-center justify-between mb-4">
-              <h2 class="text-lg font-bold">{{ selectedDailyLog || 'Select a log' }}</h2>
-            </div>
-            <div class="markdown-body text-slate-300 max-h-[30vh] overflow-auto mb-4" v-html="renderedDailyLog"></div>
-            <!-- Quick add entry -->
-            <div class="border-t border-slate-700 pt-4">
-              <h3 class="text-sm font-semibold text-slate-400 mb-2">Quick Add to Today's Log</h3>
-              <div class="flex gap-2">
-                <input v-model="newLogEntry" @keyup.enter="appendLogEntry"
-                       placeholder="Add a note to today's log..."
-                       class="flex-1 bg-slate-700 text-slate-200 text-sm rounded px-3 py-2 border border-slate-600 focus:border-blue-500 outline-none">
-                <button @click="appendLogEntry"
-                        class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium transition-colors">
-                  Add
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Session Summaries -->
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">Session Summaries</h2>
-          <select v-model="selectedSummary" @change="loadSummary(selectedSummary)"
-                  class="bg-slate-700 text-slate-200 text-xs rounded px-2 py-1 border border-slate-600">
-            <option value="">Select summary...</option>
-            <option v-for="s in sessionSummaries" :key="s.name" :value="s.name">{{ s.name }}</option>
-          </select>
-        </div>
-        <div class="markdown-body text-slate-300 max-h-[40vh] overflow-auto" v-html="renderedSummary"></div>
-      </div>
-    </div>
-
-    <!-- Dependency Graph (P3) -->
-    <div v-if="activeTab === 'graph'" class="max-w-6xl mx-auto">
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">Task Dependency Graph</h2>
-          <div class="flex items-center gap-4 text-xs">
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-600 inline-block"></span> Completed</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-blue-600 inline-block"></span> In Progress</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-slate-600 inline-block"></span> Pending</span>
-            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-600 inline-block"></span> Failed</span>
-            <span v-if="criticalPath.length" class="text-yellow-300 font-medium">
-              Critical path: {{ criticalPath.map(id => '#' + id).join(' -> ') }}
-            </span>
-          </div>
-        </div>
-        <div v-if="tasks.length === 0" class="text-slate-500 text-center py-8">
-          Select a session to view dependency graph
-        </div>
-        <div v-else ref="mermaidContainer" class="flex justify-center overflow-auto"></div>
-      </div>
-    </div>
-  </main>
-
-  <!-- Task Detail Slide-over (P1) -->
-  <Transition name="slide">
-    <div v-if="selectedTask && activeTab === 'kanban'"
-         class="fixed top-0 right-0 h-full w-[520px] bg-slate-800 border-l border-slate-700 z-50 shadow-2xl flex flex-col">
-      <!-- Header -->
-      <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between shrink-0">
+      <!-- Form -->
+      <a-space direction="vertical" :size="16" style="width: 100%;">
         <div>
-          <span class="text-xs font-mono text-slate-400">#{{ selectedTask.id }}</span>
-          <h3 class="text-sm font-bold">{{ selectedTask.subject }}</h3>
+          <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 6px; display: block;">Workspace</a-typography-text>
+          <a-space-compact style="width: 100%;">
+            <a-input v-model:value="workspace" placeholder="/path/to/your/project" size="large" />
+            <a-button size="large" @click="pickFolder" :loading="pickingFolder">Browse</a-button>
+          </a-space-compact>
         </div>
-        <button @click="selectedTask = null"
-                class="text-slate-400 hover:text-white text-lg px-2">&times;</button>
+        <div>
+          <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 6px; display: block;">Goal</a-typography-text>
+          <a-textarea v-model:value="goal" :rows="3"
+                      placeholder="e.g. Implement user authentication with JWT..."
+                      size="large" />
+        </div>
+        <a-button type="primary" block size="large"
+                  @click="startAutopilot"
+                  :disabled="!workspace.trim() || !goal.trim()">
+          Start Autopilot
+        </a-button>
+      </a-space>
+
+      <!-- Recent Workspaces -->
+      <div v-if="recentWorkspaces.length" style="margin-top: 32px;">
+        <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 8px; display: block;">Recent</a-typography-text>
+        <a-list :data-source="recentWorkspaces" size="small" :split="false">
+          <template #renderItem="{ item }">
+            <a-list-item @click="workspace = item" style="cursor: pointer; padding: 6px 12px; border-radius: 6px;">
+              <a-typography-text code style="font-size: 13px;">{{ item }}</a-typography-text>
+            </a-list-item>
+          </template>
+        </a-list>
       </div>
 
-      <!-- Detail Tabs -->
-      <div class="flex border-b border-slate-700 shrink-0">
-        <button v-for="dt in detailTabs" :key="dt.id"
-                @click="activeDetailTab = dt.id"
-                :class="[
-                  'px-4 py-2 text-xs font-medium transition-colors border-b-2',
-                  activeDetailTab === dt.id
-                    ? 'border-blue-500 text-blue-400'
-                    : 'border-transparent text-slate-400 hover:text-white'
-                ]">
-          {{ dt.label }}
-        </button>
+      <!-- Error -->
+      <a-alert v-if="error" :message="error" type="error" show-icon style="margin-top: 16px;" />
+    </div>
+  </div>
+
+  <!-- ==================== RUNNING / DONE VIEW ==================== -->
+  <div v-else class="full-height">
+
+    <!-- Top Bar -->
+    <a-layout-header style="display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 56px; line-height: 56px;">
+      <a-space :size="12" align="center">
+        <span class="gradient-title" style="font-size: 18px;">Claude Autopilot</span>
+        <!-- Status Badge -->
+        <a-tag v-if="autopilotRunning" color="success">
+          <template #icon><span class="pulse-dot" style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #52c41a; margin-right: 6px; vertical-align: middle;"></span></template>
+          Running
+        </a-tag>
+        <a-tag v-else-if="view === 'done'" color="success">Completed</a-tag>
+        <a-tag v-else color="default">Stopped</a-tag>
+      </a-space>
+      <a-space :size="12" align="center">
+        <a-typography-text type="secondary" code style="font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;" :title="workspace">{{ workspace }}</a-typography-text>
+        <a-divider type="vertical" />
+        <a-typography-text type="secondary" style="font-size: 13px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;" :title="goal">{{ goal }}</a-typography-text>
+        <a-button v-if="autopilotRunning" danger size="small" @click="stopAutopilot">Stop</a-button>
+        <a-button v-else size="small" @click="resetToLanding">New Goal</a-button>
+      </a-space>
+    </a-layout-header>
+
+    <!-- Completion Banner -->
+    <a-alert v-if="view === 'done'" message="All tasks completed!" type="success" banner show-icon>
+      <template #action>
+        <a-button size="small" type="primary" @click="resetToLanding">New Goal</a-button>
+      </template>
+    </a-alert>
+
+    <!-- Kanban Board -->
+    <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+      <!-- Waiting state: autopilot running but no tasks yet -->
+      <div v-if="tasks.length === 0 && autopilotRunning" style="flex: 1; display: flex; align-items: center; justify-content: center;">
+        <a-spin size="large">
+          <template #tip>
+            <div style="margin-top: 12px;">
+              <a-typography-text>Analyzing goal & creating tasks...</a-typography-text>
+              <br>
+              <a-typography-text type="secondary" style="font-size: 12px;">Check Live Output below for details</a-typography-text>
+            </div>
+          </template>
+        </a-spin>
       </div>
 
-      <!-- Detail Content -->
-      <div class="flex-1 overflow-auto p-4">
-        <!-- Description Tab -->
-        <div v-if="activeDetailTab === 'desc'">
-          <div class="text-sm text-slate-300 whitespace-pre-wrap">{{ selectedTask.description || 'No description' }}</div>
-          <div class="mt-4 space-y-2">
-            <div class="flex items-center gap-2 text-xs">
-              <span class="text-slate-500">Status:</span>
-              <span :class="statusClass(selectedTask.status)">{{ selectedTask.status }}</span>
+      <!-- Kanban columns -->
+      <div v-else class="kanban-wrap">
+        <div v-for="col in columns" :key="col.status" class="kanban-col">
+          <a-card size="small" :body-style="{ padding: 0 }" style="flex: 1; display: flex; flex-direction: column;">
+            <template #title>
+              <a-space>
+                <a-badge :color="col.color" />
+                <span style="font-size: 13px; font-weight: 600;">{{ col.label }}</span>
+                <a-badge :count="tasksByStatus(col.status).length" :number-style="{ backgroundColor: col.badgeBg }" />
+              </a-space>
+            </template>
+            <div class="kanban-col-body">
+              <a-card v-for="task in tasksByStatus(col.status)" :key="task.id"
+                      size="small" hoverable class="task-card"
+                      :bordered="selectedTask?.id === task.id"
+                      :style="selectedTask?.id === task.id ? { borderColor: '#1677ff' } : {}"
+                      @click="selectTask(task)">
+                <a-space direction="vertical" :size="4" style="width: 100%;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <a-typography-text type="secondary" code style="font-size: 11px;">{{ task.id }}</a-typography-text>
+                    <a-tag v-if="task.status === 'in_progress'" color="processing" :bordered="false" style="font-size: 11px; margin: 0;">Working...</a-tag>
+                  </div>
+                  <a-typography-text strong style="font-size: 13px; line-height: 1.4;">{{ task.subject }}</a-typography-text>
+                </a-space>
+              </a-card>
+              <a-empty v-if="tasksByStatus(col.status).length === 0" :image="false" description="No tasks" style="padding: 24px 0;">
+                <template #image><span></span></template>
+              </a-empty>
             </div>
-            <div v-if="selectedTask.activeForm" class="flex items-center gap-2 text-xs">
-              <span class="text-slate-500">Active:</span>
-              <span class="text-blue-300">{{ selectedTask.activeForm }}</span>
-            </div>
-          </div>
+          </a-card>
         </div>
+      </div>
 
-        <!-- Commits Tab -->
-        <div v-if="activeDetailTab === 'code'">
-          <div v-if="taskCommits.length === 0" class="text-slate-500 text-sm">No commits found for this task</div>
-          <div v-for="c in taskCommits" :key="c.hash" class="mb-3">
-            <div class="bg-slate-900 rounded p-3 cursor-pointer hover:bg-slate-900/80"
-                 @click="loadDiff(c.hash)">
-              <div class="flex items-center gap-2">
-                <span class="font-mono text-xs text-blue-400">{{ c.hash }}</span>
-                <span class="text-xs text-slate-500">{{ c.date }}</span>
-              </div>
-              <p class="text-sm mt-1">{{ c.message }}</p>
-              <p class="text-xs text-slate-500 mt-1">{{ c.author }}</p>
-            </div>
-            <pre v-if="expandedDiff === c.hash" class="text-xs text-slate-400 bg-slate-950 rounded-b p-3 font-mono overflow-x-auto max-h-64">{{ diffContent }}</pre>
-          </div>
-        </div>
-
-        <!-- Test Tab -->
-        <div v-if="activeDetailTab === 'test'">
-          <div class="flex items-center gap-2 mb-4">
-            <select v-model="testCommand"
-                    class="bg-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 border border-slate-600 outline-none">
-              <option value="pytest">pytest</option>
-              <option value="python -m pytest">python -m pytest</option>
-              <option value="playwright test">playwright test</option>
-            </select>
-            <button @click="runTest" :disabled="testRunning"
-                    :class="[
-                      'px-3 py-1.5 rounded text-sm font-medium transition-colors',
-                      testRunning
-                        ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
-                        : 'bg-green-600 hover:bg-green-500 text-white'
-                    ]">
-              {{ testRunning ? 'Running...' : 'Run Test' }}
-            </button>
-          </div>
-          <pre ref="testOutput" class="text-xs text-slate-300 whitespace-pre-wrap font-mono max-h-[50vh] overflow-auto bg-slate-900 rounded p-3">{{ testOutputText || 'Click "Run Test" to start...' }}</pre>
-        </div>
-
-        <!-- Dependencies Tab -->
-        <div v-if="activeDetailTab === 'deps'">
-          <h4 class="text-xs font-semibold text-slate-400 mb-2">Blocked By</h4>
-          <div v-if="!selectedTask.blockedBy?.length" class="text-sm text-slate-500 mb-4">None</div>
-          <div v-else class="space-y-1 mb-4">
-            <div v-for="dep in selectedTask.blockedBy" :key="dep"
-                 @click="jumpToTask(dep)"
-                 class="flex items-center gap-2 text-sm cursor-pointer hover:text-white transition-colors">
-              <span :class="isTaskCompleted(dep) ? 'text-green-400' : 'text-yellow-400'">
-                {{ isTaskCompleted(dep) ? '\u2713' : '\u25cb' }}
-              </span>
-              <span class="font-mono text-xs">#{{ dep }}</span>
-              <span class="text-slate-400">{{ getTaskSubject(dep) }}</span>
-            </div>
-          </div>
-          <h4 class="text-xs font-semibold text-slate-400 mb-2">Blocks</h4>
-          <div v-if="!selectedTask.blocks?.length" class="text-sm text-slate-500">None</div>
-          <div v-else class="space-y-1">
-            <div v-for="b in selectedTask.blocks" :key="b"
-                 @click="jumpToTask(b)"
-                 class="flex items-center gap-2 text-sm cursor-pointer hover:text-white transition-colors">
-              <span class="font-mono text-xs">#{{ b }}</span>
-              <span class="text-slate-400">{{ getTaskSubject(b) }}</span>
-            </div>
-          </div>
-        </div>
+      <!-- Live Output Panel -->
+      <div style="border-top: 1px solid #303030;">
+        <a-collapse v-model:activeKey="outputActiveKey" :bordered="false" style="background: transparent;">
+          <a-collapse-panel key="output" style="border: none;">
+            <template #header>
+              <a-space>
+                <a-typography-text type="secondary" strong>Live Output</a-typography-text>
+                <a-tag v-if="autopilotRunning" color="success" :bordered="false" style="font-size: 11px;">streaming...</a-tag>
+              </a-space>
+            </template>
+            <pre ref="liveLogEl" class="live-log-pre">{{ liveLog || 'Autopilot output will appear here...' }}</pre>
+          </a-collapse-panel>
+        </a-collapse>
       </div>
     </div>
-  </Transition>
 
-  <!-- Backdrop -->
-  <Transition name="fade">
-    <div v-if="selectedTask && activeTab === 'kanban'"
-         @click="selectedTask = null"
-         class="fixed inset-0 bg-black/30 z-40"></div>
-  </Transition>
+    <!-- Task Detail Drawer -->
+    <a-drawer :open="!!selectedTask" @close="selectedTask = null"
+              :width="440" placement="right"
+              :title="selectedTask ? selectedTask.id + ': ' + selectedTask.subject : ''">
+      <template v-if="selectedTask">
+        <a-descriptions :column="1" size="small" bordered style="margin-bottom: 16px;">
+          <a-descriptions-item label="Status">
+            <a-tag :color="statusColor(selectedTask.status)">{{ selectedTask.status }}</a-tag>
+          </a-descriptions-item>
+        </a-descriptions>
+
+        <!-- Commits for this task -->
+        <a-typography-title :level="5" style="margin-bottom: 12px;">Commits</a-typography-title>
+        <a-list v-if="taskCommits.length > 0" :data-source="taskCommits" size="small">
+          <template #renderItem="{ item }">
+            <a-list-item>
+              <a-list-item-meta>
+                <template #title>
+                  <a-space>
+                    <a-typography-text code>{{ item.hash }}</a-typography-text>
+                    <a-typography-text type="secondary" style="font-size: 12px;">{{ item.date }}</a-typography-text>
+                  </a-space>
+                </template>
+                <template #description>{{ item.message }}</template>
+              </a-list-item-meta>
+            </a-list-item>
+          </template>
+        </a-list>
+        <a-empty v-else description="No commits found for this task." />
+      </template>
+    </a-drawer>
+
+  </div>
+
+  </a-config-provider>
 </div>
 
 <script>
 const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
 
-createApp({
+const app = createApp({
   setup() {
-    // State
-    const sessions = ref([]);
-    const selectedSession = ref('');
+    // ── State ──────────────────────────────────────────────────────────
+    const view = ref('landing');           // 'landing' | 'running' | 'done'
+    const workspace = ref('');
+    const goal = ref('');
+    const error = ref('');
+    const recentWorkspaces = ref([]);
     const tasks = ref([]);
     const selectedTask = ref(null);
-    const progress = ref('');
-    const claudeMd = ref('');
-    const claudeMdDraft = ref('');
-    const configEditing = ref(false);
-    const logs = ref([]);
-    const selectedLog = ref('');
-    const logContent = ref('');
     const taskCommits = ref([]);
-    const expandedDiff = ref('');
-    const diffContent = ref('');
-    const testCommand = ref('pytest');
-    const testRunning = ref(false);
-    const testOutputText = ref('');
-    const testOutput = ref(null);
-    const wsConnected = ref(false);
-    const activeTab = ref('kanban');
-    const activeDetailTab = ref('desc');
-    const mermaidContainer = ref(null);
-    const autopilotStatus = ref({});
-    const autopilotGoal = ref('');
-    const autopilotLiveLog = ref('');
+    const autopilotRunning = ref(false);
+    const pickingFolder = ref(false);
+    const liveLog = ref('');
     const liveLogEl = ref(null);
-    const autoScroll = ref(true);
-    const showReconnectToast = ref(false);
-    const selfTestRunning = ref(false);
-    const selfTestOutputText = ref('');
-    const selfTestOutput = ref(null);
-    const selfTestStatus = ref('');  // '', 'pass', 'fail'
+    const outputActiveKey = ref(['output']);
 
-    // Memory state
-    const memoryContent = ref('');
-    const memoryDraft = ref('');
-    const memoryEditing = ref(false);
-    const dailyLogs = ref([]);
-    const selectedDailyLog = ref('');
-    const dailyLogContent = ref('');
-    const memorySearchQuery = ref('');
-    const memorySearchResults = ref([]);
-    const memorySearching = ref(false);
-    const sessionSummaries = ref([]);
-    const selectedSummary = ref('');
-    const summaryContent = ref('');
-    const newLogEntry = ref('');
-
-    const tabs = [
-      { id: 'kanban', label: 'Kanban' },
-      { id: 'progress', label: 'Progress' },
-      { id: 'graph', label: 'Graph' },
-      { id: 'memory', label: 'Memory' },
-      { id: 'control', label: 'Control' },
-      { id: 'logs', label: 'Logs' },
-    ];
-
-    const detailTabs = [
-      { id: 'desc', label: 'Description' },
-      { id: 'code', label: 'Commits' },
-      { id: 'test', label: 'Test' },
-      { id: 'deps', label: 'Dependencies' },
-    ];
+    // ── Theme config (dark mode) ─────────────────────────────────────
+    const themeConfig = ref({
+      algorithm: antd.theme.darkAlgorithm,
+      token: {
+        colorPrimary: '#1677ff',
+        borderRadius: 8,
+      },
+    });
 
     const columns = [
-      { status: 'pending', label: 'Pending', headerClass: 'bg-slate-600' },
-      { status: 'in_progress', label: 'In Progress', headerClass: 'bg-blue-600' },
-      { status: 'completed', label: 'Completed', headerClass: 'bg-green-600' },
-      { status: 'failed', label: 'Failed', headerClass: 'bg-red-600' },
+      { status: 'pending', label: 'Pending', color: '#8c8c8c', badgeBg: '#434343' },
+      { status: 'in_progress', label: 'In Progress', color: '#1677ff', badgeBg: '#1677ff' },
+      { status: 'completed', label: 'Completed', color: '#52c41a', badgeBg: '#52c41a' },
+      { status: 'failed', label: 'Failed', color: '#ff4d4f', badgeBg: '#ff4d4f' },
     ];
 
-    // API helpers
+    // ── API helper ─────────────────────────────────────────────────────
     const api = async (path, opts) => {
       const res = await fetch(path, opts);
       return res.json();
     };
 
-    // Data loading
-    const loadSessions = async () => {
-      sessions.value = await api('/api/sessions');
-      if (!selectedSession.value && sessions.value.length > 0) {
-        selectedSession.value = sessions.value[0].id;
-        await loadTasks();
-      }
+    // ── Data loading ───────────────────────────────────────────────────
+    const loadRecentWorkspaces = async () => {
+      recentWorkspaces.value = await api('/api/workspaces/recent');
     };
 
     const loadTasks = async () => {
-      if (!selectedSession.value) { tasks.value = []; return; }
-      tasks.value = await api(`/api/tasks/${selectedSession.value}`);
+      if (!workspace.value) return;
+      tasks.value = await api(`/api/workspace/tasks?path=${encodeURIComponent(workspace.value)}`);
     };
 
-    const loadProgress = async () => {
-      const data = await api('/api/progress');
-      progress.value = data.content || '';
+    const loadAutopilotStatus = async () => {
+      const data = await api('/api/autopilot/status');
+      autopilotRunning.value = data.running || false;
     };
 
-    const loadClaudeMd = async () => {
-      const data = await api('/api/claude-md');
-      claudeMd.value = data.content || '';
-      if (!configEditing.value) claudeMdDraft.value = claudeMd.value;
-    };
-
-    const saveClaudeMd = async () => {
-      await api('/api/claude-md', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: claudeMdDraft.value }),
-      });
-      claudeMd.value = claudeMdDraft.value;
-      configEditing.value = false;
-    };
-
-    const loadLogs = async () => {
-      logs.value = await api('/api/logs');
-    };
-
-    const loadLog = async (name) => {
-      if (!name) return;
-      selectedLog.value = name;
-      const data = await api(`/api/logs/${name}`);
-      logContent.value = data.content || '';
+    const loadLiveLog = async () => {
+      const data = await api('/api/autopilot/logs?tail=500');
+      liveLog.value = (data.lines || []).join('');
+      await nextTick();
+      scrollLog();
     };
 
     const loadCommits = async (taskId) => {
       taskCommits.value = await api(`/api/commits/${taskId}`);
-      expandedDiff.value = '';
     };
 
-    const loadDiff = async (hash) => {
-      if (expandedDiff.value === hash) { expandedDiff.value = ''; return; }
-      const data = await api(`/api/diff/${hash}`);
-      diffContent.value = data.content || '';
-      expandedDiff.value = hash;
-    };
-
-    const loadAutopilotStatus = async () => {
-      autopilotStatus.value = await api('/api/autopilot/status');
-    };
-
-    const loadAutopilotLogs = async () => {
-      const data = await api('/api/autopilot/logs?tail=500');
-      autopilotLiveLog.value = (data.lines || []).join('');
-      await nextTick();
-      if (autoScroll.value && liveLogEl.value) {
+    const scrollLog = () => {
+      if (liveLogEl.value) {
         liveLogEl.value.scrollTop = liveLogEl.value.scrollHeight;
       }
     };
 
-    // Memory loading
-    const loadMemory = async () => {
-      const data = await api('/api/memory');
-      memoryContent.value = data.content || '';
-      if (!memoryEditing.value) memoryDraft.value = memoryContent.value;
-    };
-
-    const saveMemory = async () => {
-      await api('/api/memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: memoryDraft.value }),
-      });
-      memoryContent.value = memoryDraft.value;
-      memoryEditing.value = false;
-    };
-
-    const loadDailyLogs = async () => {
-      dailyLogs.value = await api('/api/memory/daily');
-    };
-
-    const loadDailyLog = async (logDate) => {
-      if (!logDate) return;
-      selectedDailyLog.value = logDate;
-      const data = await api(`/api/memory/daily/${logDate}`);
-      dailyLogContent.value = data.content || '';
-    };
-
-    const appendLogEntry = async () => {
-      if (!newLogEntry.value.trim()) return;
-      await api('/api/memory/daily', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entry: newLogEntry.value }),
-      });
-      newLogEntry.value = '';
-      // Reload today's log if viewing it
-      const today = new Date().toISOString().slice(0, 10);
-      if (selectedDailyLog.value === today || !selectedDailyLog.value) {
-        await loadDailyLog(today);
-      }
-      await loadDailyLogs();
-    };
-
-    const searchMemory = async () => {
-      if (!memorySearchQuery.value.trim()) return;
-      memorySearching.value = true;
-      const data = await api('/api/memory/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: memorySearchQuery.value }),
-      });
-      memorySearchResults.value = data.results || [];
-      memorySearching.value = false;
-    };
-
-    const loadSummaries = async () => {
-      sessionSummaries.value = await api('/api/summaries');
-    };
-
-    const loadSummary = async (filename) => {
-      if (!filename) return;
-      selectedSummary.value = filename;
-      const data = await api(`/api/summaries/${filename}`);
-      summaryContent.value = data.content || '';
+    // ── Actions ────────────────────────────────────────────────────────
+    const pickFolder = async () => {
+      pickingFolder.value = true;
+      try {
+        const res = await api('/api/pick-folder', { method: 'POST' });
+        if (res.path) workspace.value = res.path;
+      } catch {}
+      pickingFolder.value = false;
     };
 
     const startAutopilot = async () => {
-      autopilotLiveLog.value = '';
-      await api('/api/autopilot/start', {
+      error.value = '';
+      const res = await api('/api/autopilot/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal: autopilotGoal.value }),
+        body: JSON.stringify({ goal: goal.value, workspace: workspace.value }),
       });
-      await loadAutopilotStatus();
+      if (!res.ok) {
+        error.value = res.error || 'Failed to start';
+        return;
+      }
+      autopilotRunning.value = true;
+      view.value = 'running';
+      liveLog.value = '';
+      localStorage.setItem('ap_workspace', workspace.value);
+      localStorage.setItem('ap_goal', goal.value);
+      localStorage.setItem('ap_view', 'running');
     };
 
     const stopAutopilot = async () => {
       await api('/api/autopilot/stop', { method: 'POST' });
-      await loadAutopilotStatus();
+      autopilotRunning.value = false;
     };
 
-    // Test runner (SSE)
-    const runTest = async () => {
-      testRunning.value = true;
-      testOutputText.value = '';
-      try {
-        const res = await fetch('/api/test/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: testCommand.value }),
-        });
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.line) testOutputText.value += data.line;
-                if (data.done) {
-                  testOutputText.value += `\n--- Exit code: ${data.returncode} ---`;
-                }
-              } catch {}
-            }
-          }
-          if (testOutput.value) {
-            testOutput.value.scrollTop = testOutput.value.scrollHeight;
-          }
-        }
-      } catch (e) {
-        testOutputText.value += `\nError: ${e.message}`;
-      }
-      testRunning.value = false;
+    const resetToLanding = () => {
+      view.value = 'landing';
+      tasks.value = [];
+      selectedTask.value = null;
+      liveLog.value = '';
+      goal.value = '';
+      localStorage.removeItem('ap_view');
+      localStorage.removeItem('ap_goal');
+      loadRecentWorkspaces();
     };
 
-    // Self-test runner (SSE)
-    const runSelfTest = async () => {
-      selfTestRunning.value = true;
-      selfTestOutputText.value = '';
-      selfTestStatus.value = '';
-      try {
-        const res = await fetch('/api/self-test', { method: 'POST' });
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.line) selfTestOutputText.value += data.line;
-                if (data.done) {
-                  selfTestStatus.value = data.returncode === 0 ? 'pass' : 'fail';
-                  selfTestOutputText.value += `\n--- ${data.returncode === 0 ? 'ALL TESTS PASSED' : 'TESTS FAILED'} (exit code: ${data.returncode}) ---`;
-                }
-              } catch {}
-            }
-          }
-          if (selfTestOutput.value) {
-            selfTestOutput.value.scrollTop = selfTestOutput.value.scrollHeight;
-          }
-        }
-      } catch (e) {
-        selfTestOutputText.value += `\nError: ${e.message}`;
-        selfTestStatus.value = 'fail';
-      }
-      selfTestRunning.value = false;
-    };
-
-    // Computed
-    const tasksByStatus = (status) => {
-      return tasks.value.filter(t => t.status === status);
-    };
-
-    const renderedProgress = computed(() => {
-      if (!progress.value) return '<p class="text-slate-500">No progress file found</p>';
-      return marked.parse(progress.value);
-    });
-
-    const renderedClaudeMd = computed(() => {
-      if (!claudeMd.value) return '<p class="text-slate-500">No CLAUDE.md found</p>';
-      return marked.parse(claudeMd.value);
-    });
-
-    const renderedMemory = computed(() => {
-      if (!memoryContent.value) return '<p class="text-slate-500">No long-term memory yet. Edit to add content.</p>';
-      return marked.parse(memoryContent.value);
-    });
-
-    const renderedDailyLog = computed(() => {
-      if (!dailyLogContent.value) return '<p class="text-slate-500">Select a daily log or add an entry to start today\'s log.</p>';
-      return marked.parse(dailyLogContent.value);
-    });
-
-    const renderedSummary = computed(() => {
-      if (!summaryContent.value) return '<p class="text-slate-500">Select a session summary to view.</p>';
-      return marked.parse(summaryContent.value);
-    });
-
-    const isTaskCompleted = (id) => {
-      const t = tasks.value.find(t => String(t.id) === String(id));
-      return t?.status === 'completed';
-    };
-
-    const getTaskSubject = (id) => {
-      const t = tasks.value.find(t => String(t.id) === String(id));
-      return t?.subject || 'Unknown';
-    };
-
-    const statusClass = (status) => {
-      const map = {
-        pending: 'text-slate-400 bg-slate-500/20 px-2 py-0.5 rounded',
-        in_progress: 'text-blue-300 bg-blue-500/20 px-2 py-0.5 rounded',
-        completed: 'text-green-300 bg-green-500/20 px-2 py-0.5 rounded',
-        failed: 'text-red-300 bg-red-500/20 px-2 py-0.5 rounded',
-      };
-      return map[status] || '';
-    };
-
-    // Critical path computation (P3)
-    const criticalPath = computed(() => {
-      if (tasks.value.length === 0) return [];
-      const incomplete = tasks.value.filter(t => t.status !== 'completed');
-      if (incomplete.length === 0) return [];
-      const taskMap = {};
-      tasks.value.forEach(t => { taskMap[t.id] = t; });
-      // Find longest path among incomplete tasks
-      const memo = {};
-      const longestFrom = (id) => {
-        if (memo[id] !== undefined) return memo[id];
-        const t = taskMap[id];
-        if (!t || !t.blocks?.length) { memo[id] = [id]; return [id]; }
-        let best = [];
-        for (const b of t.blocks) {
-          if (taskMap[b] && taskMap[b].status !== 'completed') {
-            const path = longestFrom(b);
-            if (path.length > best.length) best = path;
-          }
-        }
-        memo[id] = [id, ...best];
-        return memo[id];
-      };
-      let longest = [];
-      for (const t of incomplete) {
-        const blockedByIncomplete = (t.blockedBy || []).some(dep => taskMap[dep] && taskMap[dep].status !== 'completed');
-        if (!blockedByIncomplete) {
-          const path = longestFrom(t.id);
-          if (path.length > longest.length) longest = path;
-        }
-      }
-      return longest;
-    });
-
-    // Task selection
     const selectTask = async (task) => {
       selectedTask.value = task;
-      activeDetailTab.value = 'desc';
+      taskCommits.value = [];
       await loadCommits(task.id);
     };
 
-    const jumpToTask = (id) => {
-      const t = tasks.value.find(t => String(t.id) === String(id));
-      if (t) selectTask(t);
-    };
+    // ── Computed ────────────────────────────────────────────────────────
+    const tasksByStatus = (status) => tasks.value.filter(t => t.status === status);
 
-    // Mermaid graph
-    const renderGraph = async () => {
-      if (!mermaidContainer.value || tasks.value.length === 0) return;
-      const cp = new Set(criticalPath.value.map(String));
-      let graph = 'graph LR\n';
-      for (const t of tasks.value) {
-        const label = t.subject.replace(/"/g, "'");
-        const shape = t.status === 'completed' ? `["\u2713 ${label}"]`
-                    : t.status === 'in_progress' ? `(["${label}"])`
-                    : `["${label}"]`;
-        graph += `  T${t.id}${shape}\n`;
-        const statusStyle = t.status === 'completed' ? 'fill:#166534,stroke:#22c55e,color:#fff'
-                          : t.status === 'in_progress' ? 'fill:#1e40af,stroke:#3b82f6,color:#fff'
-                          : t.status === 'failed' ? 'fill:#991b1b,stroke:#ef4444,color:#fff'
-                          : 'fill:#334155,stroke:#64748b,color:#cbd5e1';
-        graph += `  style T${t.id} ${statusStyle}\n`;
-        if (t.blockedBy) {
-          for (const dep of t.blockedBy) {
-            const isCritical = cp.has(String(t.id)) && cp.has(String(dep));
-            graph += isCritical
-              ? `  T${dep} ==>|critical| T${t.id}\n`
-              : `  T${dep} --> T${t.id}\n`;
-          }
+    const statusColor = (status) => ({
+      pending: 'default',
+      in_progress: 'processing',
+      completed: 'success',
+      failed: 'error',
+    }[status] || 'default');
+
+    // ── Check for completion ───────────────────────────────────────────
+    const checkCompletion = () => {
+      if (tasks.value.length > 0 && !autopilotRunning.value) {
+        const allDone = tasks.value.every(t => t.status === 'completed');
+        if (allDone) {
+          view.value = 'done';
+          localStorage.setItem('ap_view', 'done');
         }
       }
-      mermaidContainer.value.innerHTML = '';
-      try {
-        const { svg } = await mermaid.render('dag-' + Date.now(), graph);
-        mermaidContainer.value.innerHTML = svg;
-      } catch(e) {
-        mermaidContainer.value.innerHTML = '<p class="text-red-400">Failed to render graph</p>';
-      }
     };
 
-    // WebSocket
+    // ── Polling ────────────────────────────────────────────────────────
+    let pollTimer = null;
+    const startPolling = () => {
+      pollTimer = setInterval(async () => {
+        if (view.value === 'running' || view.value === 'done') {
+          await loadTasks();
+          await loadAutopilotStatus();
+          checkCompletion();
+        }
+      }, 3000);
+    };
+
+    // ── WebSocket for live log streaming ──────────────────────────────
     let ws = null;
     let wsRetryTimer = null;
-
-    let wasDisconnected = false;
 
     const connectWs = () => {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${location.host}/ws`);
-      ws.onopen = () => {
-        wsConnected.value = true;
-        if (wasDisconnected) {
-          showReconnectToast.value = true;
-          setTimeout(() => { showReconnectToast.value = false; }, 3000);
-          wasDisconnected = false;
-          // Refresh data after reconnect
-          loadSessions();
-          loadProgress();
-          loadAutopilotStatus();
-        }
-      };
+      ws.onopen = () => {};
       ws.onclose = () => {
-        wsConnected.value = false;
-        wasDisconnected = true;
         wsRetryTimer = setTimeout(connectWs, 3000);
       };
       ws.onmessage = async (e) => {
         const msg = JSON.parse(e.data);
         if (msg.type === 'ui_reload') {
-          // Save state to localStorage before reload
-          localStorage.setItem('autopilot_tab', activeTab.value);
-          localStorage.setItem('autopilot_session', selectedSession.value);
+          localStorage.setItem('ap_view', view.value);
+          localStorage.setItem('ap_workspace', workspace.value);
+          localStorage.setItem('ap_goal', goal.value);
           location.reload();
           return;
         }
+        if (msg.type === 'autopilot_log') {
+          liveLog.value += msg.line;
+          await nextTick();
+          scrollLog();
+        }
         if (msg.type === 'file_change') {
           await loadTasks();
-          await loadProgress();
-          await loadLogs();
           await loadAutopilotStatus();
-          if (activeTab.value === 'graph') await renderGraph();
-        }
-        if (msg.type === 'autopilot_log') {
-          autopilotLiveLog.value += msg.line;
-          await nextTick();
-          if (autoScroll.value && liveLogEl.value) {
-            liveLogEl.value.scrollTop = liveLogEl.value.scrollHeight;
-          }
+          checkCompletion();
         }
       };
     };
 
-    // Watchers
-    watch(activeTab, async (tab) => {
-      if (tab === 'progress') await loadProgress();
-      if (tab === 'logs') await loadLogs();
-      if (tab === 'control') { await loadLogs(); await loadClaudeMd(); await loadAutopilotStatus(); await loadAutopilotLogs(); }
-      if (tab === 'graph') { await nextTick(); await renderGraph(); }
-      if (tab === 'memory') { await loadMemory(); await loadDailyLogs(); await loadSummaries(); }
-    });
-
-    watch(configEditing, (editing) => {
-      if (editing) claudeMdDraft.value = claudeMd.value;
-    });
-
-    watch(memoryEditing, (editing) => {
-      if (editing) memoryDraft.value = memoryContent.value;
-    });
-
-    // Init
+    // ── Lifecycle ──────────────────────────────────────────────────────
     onMounted(async () => {
-      mermaid.initialize({ startOnLoad: false, theme: 'dark', themeVariables: { darkMode: true } });
-      // Restore state from localStorage (after hot reload)
-      const savedTab = localStorage.getItem('autopilot_tab');
-      const savedSession = localStorage.getItem('autopilot_session');
-      if (savedTab) {
-        activeTab.value = savedTab;
-        localStorage.removeItem('autopilot_tab');
-      }
-      if (savedSession) {
-        selectedSession.value = savedSession;
-        localStorage.removeItem('autopilot_session');
-      }
-      await loadSessions();
-      if (selectedSession.value) await loadTasks();
-      await loadProgress();
+      const savedView = localStorage.getItem('ap_view');
+      const savedWorkspace = localStorage.getItem('ap_workspace');
+      const savedGoal = localStorage.getItem('ap_goal');
+
+      if (savedWorkspace) workspace.value = savedWorkspace;
+      if (savedGoal) goal.value = savedGoal;
+
+      await loadRecentWorkspaces();
       await loadAutopilotStatus();
+
+      if (savedView === 'running' || savedView === 'done') {
+        view.value = autopilotRunning.value ? 'running' : savedView;
+        await loadTasks();
+        await loadLiveLog();
+        checkCompletion();
+      } else if (autopilotRunning.value && savedWorkspace) {
+        view.value = 'running';
+        await loadTasks();
+        await loadLiveLog();
+      }
+
       connectWs();
+      startPolling();
     });
 
     onUnmounted(() => {
       if (ws) ws.close();
       if (wsRetryTimer) clearTimeout(wsRetryTimer);
+      if (pollTimer) clearInterval(pollTimer);
     });
 
     return {
-      sessions, selectedSession, tasks, selectedTask, progress, claudeMd, claudeMdDraft,
-      configEditing, logs, selectedLog, logContent, taskCommits, expandedDiff, diffContent,
-      testCommand, testRunning, testOutputText, testOutput, wsConnected,
-      activeTab, activeDetailTab, mermaidContainer, autopilotStatus, autopilotGoal,
-      autopilotLiveLog, liveLogEl, autoScroll,
-      showReconnectToast, selfTestRunning, selfTestOutputText, selfTestOutput, selfTestStatus,
-      // Memory
-      memoryContent, memoryDraft, memoryEditing, dailyLogs, selectedDailyLog, dailyLogContent,
-      memorySearchQuery, memorySearchResults, memorySearching,
-      sessionSummaries, selectedSummary, summaryContent, newLogEntry,
-      tabs, detailTabs, columns, criticalPath,
-      loadTasks, loadLog, loadDiff, saveClaudeMd, startAutopilot, stopAutopilot, runTest,
-      runSelfTest, loadAutopilotLogs,
-      // Memory methods
-      loadMemory, saveMemory, loadDailyLogs, loadDailyLog, appendLogEntry,
-      searchMemory, loadSummaries, loadSummary,
-      tasksByStatus, renderedProgress, renderedClaudeMd,
-      renderedMemory, renderedDailyLog, renderedSummary,
-      isTaskCompleted, getTaskSubject, statusClass, selectTask, jumpToTask,
+      view, workspace, goal, error, recentWorkspaces,
+      tasks, selectedTask, taskCommits,
+      autopilotRunning, liveLog, liveLogEl, outputActiveKey,
+      pickingFolder, columns, themeConfig,
+      pickFolder, startAutopilot, stopAutopilot, resetToLanding, selectTask,
+      tasksByStatus, statusColor, loadLiveLog,
     };
   }
-}).mount('#app');
+});
+
+app.use(antd);
+app.mount('#app');
 </script>
 </body>
 </html>
