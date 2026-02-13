@@ -202,22 +202,37 @@ ${progress}
 ## 记忆上下文
 ${memory_context}
 
+## 实时任务追踪（重要！）
+
+**你必须使用 TaskCreate 和 TaskUpdate 工具来管理任务。** 这样 Dashboard 才能实时显示进度。
+
+工作流:
+1. 分析目标后，**立即** 用 TaskCreate 创建所有任务（subject + description + activeForm）
+2. 开始做某个任务前，用 TaskUpdate 把它设为 in_progress
+3. 做完后，用 TaskUpdate 把它设为 completed
+4. 如果有依赖关系，用 TaskUpdate 的 addBlockedBy/addBlocks 设置
+
+示例:
+\`\`\`
+TaskCreate({ subject: "创建数据库 schema", description: "设计用户表...", activeForm: "创建数据库 schema" })
+TaskUpdate({ taskId: "1", status: "in_progress" })
+// ... 执行任务 ...
+TaskUpdate({ taskId: "1", status: "completed" })
+\`\`\`
+
 ## 工作流程
 
 ### 首次 Session（进度文件为空时）
 1. 分析目标，拆解为具体任务
-2. 确定任务依赖关系
-3. 写出完整的任务清单到 ${PROGRESS_FILE}
-4. 开始执行第一批无依赖的任务
-5. 如果任务适合并行，用 Agent Teams：
-   - TeamCreate 创建团队
-   - TaskCreate 创建带依赖的任务
-   - Spawn teammates 并行开发
-   - 你用 delegate mode 只协调
+2. **立即用 TaskCreate 创建所有任务**（这样 Dashboard 能实时显示）
+3. 确定任务依赖关系，用 TaskUpdate 设置 addBlockedBy
+4. 同步写任务清单到 ${PROGRESS_FILE}
+5. 开始执行第一批无依赖的任务
+6. 如果任务适合并行，用 Agent Teams
 
 ### 后续 Session（有进度时）
 1. 读取 ${PROGRESS_FILE}，了解上次做到哪里
-2. 检查哪些文件已经存在（ls、git log）
+2. 用 TaskCreate 重新创建未完成的任务（新 session 需要重新创建）
 3. 继续未完成的任务
 4. 更新 ${PROGRESS_FILE}
 
@@ -302,10 +317,13 @@ json.dump(s, open('$STATE_FILE', 'w'), indent=2)
     echo -e "${GREEN}▶ 启动 Claude Code...${NC}"
 
     set +e
-    # 不加任何管道/重定向，让 claude 直接输出到终端
+    # stream-json 模式: 每个事件一行 JSON，Dashboard 可以实时解析
+    # --verbose 是 stream-json 的必要前置条件
     claude -p "$prompt" \
         --max-turns "$MAX_TURNS" \
-        --dangerously-skip-permissions
+        --dangerously-skip-permissions \
+        --output-format stream-json \
+        --verbose
     local exit_code=$?
     set -e
 

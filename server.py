@@ -42,6 +42,150 @@ PID_FILE = AUTOPILOT_DIR / "autopilot.pid"
 MEMORY_DIR = AUTOPILOT_DIR / "memory"
 MEMORY_FILE = MEMORY_DIR / "MEMORY.md"
 SUMMARIES_DIR = AUTOPILOT_DIR / "summaries"
+RECENT_WORKSPACES_FILE = Path.home() / ".claude-autopilot" / "recent.json"
+
+# ── Active workspace (set by /api/autopilot/start) ──────────────────────────
+active_workspace: str | None = None
+autopilot_start_time: float = 0.0  # timestamp when autopilot was started
+
+# ── Real-time todos captured from stream-json TodoWrite events ──────────────
+realtime_todos: list[dict] = []
+
+
+# ── Workspace Helpers ────────────────────────────────────────────────────────
+def parse_progress_tasks(workspace_path: str) -> list[dict]:
+    """Parse .autopilot/progress.md in a workspace and return kanban tasks."""
+    progress_file = Path(workspace_path) / ".autopilot" / "progress.md"
+    if not progress_file.is_file():
+        return []
+    text = progress_file.read_text()
+    tasks = []
+    auto_id = 0
+    # Map section headers to status
+    section_map = {
+        "已完成": "completed",
+        "进行中": "in_progress",
+        "待办": "pending",
+        "失败": "failed",
+    }
+    current_status = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        # Detect section headers like "## 已完成"
+        if stripped.startswith("## "):
+            header = stripped[3:].strip()
+            current_status = section_map.get(header)
+            continue
+        if current_status is None:
+            continue
+        # Pattern 1: "- [x] TASK-001: description"
+        m = re.match(r"^-\s*\[[ xX]?\]\s*(TASK-\d+)\s*[:：]\s*(.+)", stripped)
+        if m:
+            tasks.append({
+                "id": m.group(1),
+                "subject": m.group(2).strip(),
+                "status": current_status,
+            })
+            continue
+        # Pattern 2: "- [x] description" (no TASK-xxx prefix, auto-assign ID)
+        m2 = re.match(r"^-\s*\[[ xX]?\]\s*(.+)", stripped)
+        if m2:
+            desc = m2.group(1).strip()
+            # Skip placeholder lines
+            if desc in ("（无）", "（等待首次 session 拆解）", "无"):
+                continue
+            auto_id += 1
+            # Try to extract TASK-xxx from description text
+            tid_match = re.search(r"(TASK-\d+)", desc)
+            tid = tid_match.group(1) if tid_match else f"#{auto_id:03d}"
+            tasks.append({
+                "id": tid,
+                "subject": desc,
+                "status": current_status,
+            })
+            continue
+        # Pattern 3: plain "- description" (no checkbox)
+        m3 = re.match(r"^-\s+(.+)", stripped)
+        if m3:
+            desc = m3.group(1).strip()
+            if desc in ("（无）", "（等待首次 session 拆解）", "无"):
+                continue
+            auto_id += 1
+            tid_match = re.search(r"(TASK-\d+)", desc)
+            tid = tid_match.group(1) if tid_match else f"#{auto_id:03d}"
+            tasks.append({
+                "id": tid,
+                "subject": desc,
+                "status": current_status,
+            })
+    return tasks
+
+
+def read_recent_workspaces() -> list[str]:
+    """Read recent workspace paths from ~/.claude-autopilot/recent.json."""
+    if not RECENT_WORKSPACES_FILE.is_file():
+        return []
+    try:
+        data = json.loads(RECENT_WORKSPACES_FILE.read_text())
+        if isinstance(data, list):
+            return [str(p) for p in data if isinstance(p, str)]
+    except (json.JSONDecodeError, OSError):
+        pass
+    return []
+
+
+def save_recent_workspace(workspace: str):
+    """Add a workspace to the recent list (max 10, deduplicated)."""
+    recents = read_recent_workspaces()
+    # Remove if already exists, then prepend
+    recents = [r for r in recents if r != workspace]
+    recents.insert(0, workspace)
+    recents = recents[:10]
+    RECENT_WORKSPACES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    RECENT_WORKSPACES_FILE.write_text(json.dumps(recents, indent=2))
+
+
+def get_latest_session_tasks() -> list[dict]:
+    """Read tasks from Claude Code sessions created after autopilot started.
+
+    Claude Code writes task JSON files in real-time via TaskCreate/TaskUpdate.
+    We only look at sessions created after autopilot_start_time to avoid
+    showing tasks from unrelated sessions.
+    """
+    if not TASKS_DIR.is_dir() or autopilot_start_time == 0.0:
+        return []
+    # Find sessions created after autopilot started
+    candidates = []
+    for d in TASKS_DIR.iterdir():
+        if d.is_dir():
+            try:
+                ctime = d.stat().st_birthtime  # macOS creation time
+            except (OSError, AttributeError):
+                try:
+                    ctime = d.stat().st_mtime
+                except OSError:
+                    continue
+            # Only consider sessions created after autopilot started (with 5s grace)
+            if ctime >= autopilot_start_time - 5:
+                candidates.append((d, ctime))
+    if not candidates:
+        return []
+    # Use the most recently created session
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    latest_dir = candidates[0][0]
+    # Read task JSONs
+    tasks = []
+    for f in sorted(latest_dir.iterdir()):
+        if f.suffix == ".json":
+            try:
+                data = json.loads(f.read_text())
+                if isinstance(data, dict) and "subject" in data:
+                    tasks.append(data)
+                elif isinstance(data, list):
+                    tasks.extend(t for t in data if isinstance(t, dict) and "subject" in t)
+            except (json.JSONDecodeError, OSError):
+                continue
+    return tasks
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -339,6 +483,82 @@ async def index():
     return FileResponse(PROJECT_DIR / "index.html")
 
 
+# ── Workspace API ────────────────────────────────────────────────────────────
+@app.post("/api/pick-folder")
+async def api_pick_folder():
+    """Open native macOS folder picker dialog and return selected path."""
+    try:
+        result = subprocess.run(
+            ["osascript", "-e",
+             'POSIX path of (choose folder with prompt "Select workspace folder")'],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip().rstrip("/")
+            return {"path": path}
+        return {"path": "", "cancelled": True}
+    except subprocess.TimeoutExpired:
+        return {"path": "", "error": "Timed out"}
+    except FileNotFoundError:
+        return {"path": "", "error": "osascript not available"}
+
+
+@app.get("/api/workspaces/recent")
+async def api_recent_workspaces():
+    """Get recent workspace paths."""
+    return read_recent_workspaces()
+
+
+@app.get("/api/workspace/tasks")
+async def api_workspace_tasks(path: str = ""):
+    """Return kanban tasks from the best available real-time source.
+
+    Priority order:
+    1. realtime_todos — captured from stream-json TodoWrite events (most real-time)
+    2. ~/.claude/tasks/ — Claude Code's native task system (TaskCreate/TaskUpdate)
+    3. .autopilot/progress.md — only updated when Claude explicitly writes it
+    """
+    if not path:
+        path = str(PROJECT_DIR)
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_dir():
+        return []
+    # Source 1: Real-time todos from stream-json TodoWrite interception
+    if realtime_todos:
+        return realtime_todos
+    # Source 2: Real-time tasks from Claude Code's task system
+    realtime_tasks = get_latest_session_tasks()
+    if realtime_tasks:
+        return [t for t in realtime_tasks if t.get("status") != "deleted"]
+    # Source 3: Fallback to progress.md parsing
+    return parse_progress_tasks(str(resolved))
+
+
+@app.get("/api/workspace/goal")
+async def api_workspace_goal(path: str = ""):
+    """Read the current goal from a workspace's progress.md."""
+    if not path:
+        path = str(PROJECT_DIR)
+    resolved = Path(path).expanduser().resolve()
+    progress_file = resolved / ".autopilot" / "progress.md"
+    if not progress_file.is_file():
+        return {"goal": ""}
+    text = progress_file.read_text()
+    # Extract goal from "## 目标" section
+    in_goal = False
+    goal_lines = []
+    for line in text.splitlines():
+        if line.strip().startswith("## 目标"):
+            in_goal = True
+            continue
+        if in_goal:
+            if line.strip().startswith("## "):
+                break
+            if line.strip():
+                goal_lines.append(line.strip())
+    return {"goal": " ".join(goal_lines)}
+
+
 @app.get("/api/sessions")
 async def api_sessions():
     return list_sessions()
@@ -503,17 +723,143 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
+def _parse_stream_event(line: str) -> dict | None:
+    """Parse a stream-json line from claude -p and extract a human-readable activity event."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        # Not JSON — plain text from autopilot.sh banner/status
+        if line and not line.startswith("\x1b"):  # skip ANSI-only lines
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            if clean:
+                return {"event": "shell", "summary": clean}
+        return None
+
+    msg_type = data.get("type", "")
+
+    # Final result event
+    if msg_type == "result":
+        cost = data.get("cost_usd", 0)
+        turns = data.get("num_turns", 0)
+        duration = data.get("duration_ms", 0)
+        return {
+            "event": "result",
+            "summary": f"Session complete — {turns} turns, ${cost:.4f}, {duration / 1000:.0f}s",
+            "session_id": data.get("session_id", ""),
+        }
+
+    # Assistant message with content blocks
+    if msg_type == "assistant":
+        global realtime_todos
+        msg = data.get("message", {})
+        content = msg.get("content", [])
+        events = []
+        for block in content:
+            btype = block.get("type", "")
+            if btype == "tool_use":
+                tool = block.get("name", "unknown")
+                inp = block.get("input", {})
+                # Intercept TodoWrite to capture real-time task list
+                if tool == "TodoWrite":
+                    _capture_todos(inp)
+                summary = _tool_summary(tool, inp)
+                events.append({"event": "tool_use", "tool": tool, "summary": summary})
+            elif btype == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    # Take first 120 chars of text as summary
+                    short = text[:120] + ("..." if len(text) > 120 else "")
+                    events.append({"event": "text", "summary": short})
+        # Return the most interesting event (tool_use > text)
+        for e in events:
+            if e["event"] == "tool_use":
+                return e
+        for e in events:
+            if e["event"] == "text":
+                return e
+        return None
+
+    return None
+
+
+def _capture_todos(inp: dict):
+    """Capture todos from a TodoWrite tool call and store as real-time kanban tasks."""
+    global realtime_todos
+    todos = inp.get("todos", [])
+    if not todos:
+        return
+    captured = []
+    for t in todos:
+        if not isinstance(t, dict):
+            continue
+        # TodoWrite format: {id, content, status, priority?}
+        tid = str(t.get("id", ""))
+        content = t.get("content", "") or t.get("subject", "") or t.get("description", "")
+        status = t.get("status", "pending")
+        # Normalize status: TodoWrite uses "in_progress", "completed", "pending"
+        if status not in ("pending", "in_progress", "completed", "failed"):
+            status = "pending"
+        captured.append({
+            "id": f"TODO-{tid}" if tid and not tid.startswith("TODO") and not tid.startswith("TASK") else (tid or f"TODO-{len(captured)+1}"),
+            "subject": content,
+            "status": status,
+            "description": t.get("description", ""),
+        })
+    if captured:
+        realtime_todos = captured
+
+
+def _tool_summary(tool: str, inp: dict) -> str:
+    """Generate a human-readable summary for a tool call."""
+    if tool in ("Read", "read"):
+        path = inp.get("file_path", "")
+        return f"Reading {Path(path).name}" if path else "Reading file"
+    if tool in ("Edit", "edit"):
+        path = inp.get("file_path", "")
+        return f"Editing {Path(path).name}" if path else "Editing file"
+    if tool in ("Write", "write"):
+        path = inp.get("file_path", "")
+        return f"Writing {Path(path).name}" if path else "Writing file"
+    if tool in ("Bash", "bash"):
+        cmd = inp.get("command", "")
+        short = cmd[:80] + ("..." if len(cmd) > 80 else "")
+        return f"Running: {short}" if cmd else "Running command"
+    if tool in ("Glob", "glob"):
+        return f"Searching: {inp.get('pattern', '?')}"
+    if tool in ("Grep", "grep"):
+        return f"Grep: {inp.get('pattern', '?')}"
+    if tool in ("TaskCreate",):
+        return f"Creating task: {inp.get('subject', '?')}"
+    if tool in ("TaskUpdate",):
+        tid = inp.get("taskId", "?")
+        status = inp.get("status", "")
+        return f"Task #{tid} → {status}" if status else f"Updating task #{tid}"
+    if tool in ("WebFetch",):
+        return f"Fetching: {inp.get('url', '?')[:60]}"
+    if tool in ("WebSearch",):
+        return f"Searching: {inp.get('query', '?')[:60]}"
+    if tool in ("Task",):
+        desc = inp.get("description", "")
+        return f"Spawning agent: {desc}" if desc else "Spawning sub-agent"
+    if tool in ("TodoWrite",):
+        todos = inp.get("todos", [])
+        return f"Updating task list ({len(todos)} items)"
+    return f"{tool}"
+
+
 async def _tail_live_log():
-    """Tail the live.log file and broadcast new lines via WebSocket."""
+    """Tail the live.log file, parse stream-json events, and broadcast via WebSocket."""
     last_pos = 0
     if LIVE_LOG_FILE.is_file():
         last_pos = LIVE_LOG_FILE.stat().st_size
-        # Load existing content into buffer
         text = LIVE_LOG_FILE.read_text(errors="replace")
         lines = text.splitlines(keepends=True)
         autopilot_log_lines.extend(lines[-MAX_LOG_LINES:])
     while True:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)  # Faster polling for responsiveness
         if not LIVE_LOG_FILE.is_file():
             continue
         size = LIVE_LOG_FILE.stat().st_size
@@ -526,9 +872,15 @@ async def _tail_live_log():
                 autopilot_log_lines.append(line)
                 if len(autopilot_log_lines) > MAX_LOG_LINES:
                     del autopilot_log_lines[:len(autopilot_log_lines) - MAX_LOG_LINES]
-                await broadcast({"type": "autopilot_log", "line": line})
+                # Try to parse as stream-json event
+                activity = _parse_stream_event(line)
+                if activity:
+                    activity["timestamp"] = datetime.now().strftime("%H:%M:%S")
+                    await broadcast({"type": "autopilot_activity", **activity})
+                else:
+                    # Fallback: send raw line
+                    await broadcast({"type": "autopilot_log", "line": line})
         elif size < last_pos:
-            # File was truncated/recreated
             last_pos = 0
 
 
@@ -574,31 +926,40 @@ async def api_autopilot_logs(tail: int = 200):
 
 class AutopilotStartRequest(BaseModel):
     goal: str = ""
+    workspace: str = ""
 
 
 @app.post("/api/autopilot/start")
 async def api_autopilot_start(req: AutopilotStartRequest):
-    global autopilot_pid
+    global autopilot_pid, active_workspace, autopilot_start_time, realtime_todos
     if autopilot_pid and _is_pid_alive(autopilot_pid):
         return {"ok": False, "error": "Already running"}
     goal = req.goal or "Continue from progress.md"
+    workspace = req.workspace or str(PROJECT_DIR)
+    workspace_path = Path(workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        return {"ok": False, "error": f"Workspace not found: {workspace}"}
     script = PROJECT_DIR / "autopilot.sh"
     if not script.is_file():
         return {"ok": False, "error": "autopilot.sh not found"}
+    active_workspace = str(workspace_path)
+    autopilot_start_time = datetime.now().timestamp()
+    save_recent_workspace(active_workspace)
     AUTOPILOT_DIR.mkdir(parents=True, exist_ok=True)
     env = {**os.environ}
     env.pop("CLAUDECODE", None)  # allow nested launch
     autopilot_log_lines.clear()
+    realtime_todos = []
     # Clear live.log for fresh run
     LIVE_LOG_FILE.write_text("")
     # Launch process detached (start_new_session=True) so uvicorn reload won't kill it
     # Output goes to live.log file instead of pipe
     log_fd = open(LIVE_LOG_FILE, "a")
     proc = subprocess.Popen(
-        ["bash", str(script), goal],
+        ["bash", str(script), goal, str(workspace_path)],
         stdout=log_fd,
         stderr=subprocess.STDOUT,
-        cwd=str(PROJECT_DIR),
+        cwd=str(workspace_path),
         env=env,
         start_new_session=True,
     )
@@ -628,6 +989,64 @@ async def api_autopilot_stop():
                 pass
         return {"ok": True}
     return {"ok": False, "error": "Not running"}
+
+
+@app.post("/api/autopilot/restart")
+async def api_autopilot_restart(req: AutopilotStartRequest):
+    """Stop the current autopilot (if running) and start with a new goal.
+
+    This allows changing goals without returning to the landing page.
+    """
+    global autopilot_pid, active_workspace, autopilot_start_time
+
+    # 1. Stop current process if running
+    if autopilot_pid and _is_pid_alive(autopilot_pid):
+        try:
+            os.killpg(autopilot_pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            try:
+                os.kill(autopilot_pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+        autopilot_pid = None
+        if PID_FILE.is_file():
+            try:
+                PID_FILE.unlink()
+            except OSError:
+                pass
+        # Brief pause to let process fully terminate
+        await asyncio.sleep(1)
+
+    # 2. Start with new goal (reuse start logic)
+    goal = req.goal or "Continue from progress.md"
+    workspace = req.workspace or str(PROJECT_DIR)
+    workspace_path = Path(workspace).expanduser().resolve()
+    if not workspace_path.is_dir():
+        return {"ok": False, "error": f"Workspace not found: {workspace}"}
+    script = PROJECT_DIR / "autopilot.sh"
+    if not script.is_file():
+        return {"ok": False, "error": "autopilot.sh not found"}
+    active_workspace = str(workspace_path)
+    autopilot_start_time = datetime.now().timestamp()
+    save_recent_workspace(active_workspace)
+    AUTOPILOT_DIR.mkdir(parents=True, exist_ok=True)
+    env = {**os.environ}
+    env.pop("CLAUDECODE", None)
+    autopilot_log_lines.clear()
+    LIVE_LOG_FILE.write_text("")
+    log_fd = open(LIVE_LOG_FILE, "a")
+    proc = subprocess.Popen(
+        ["bash", str(script), goal, str(workspace_path)],
+        stdout=log_fd,
+        stderr=subprocess.STDOUT,
+        cwd=str(workspace_path),
+        env=env,
+        start_new_session=True,
+    )
+    log_fd.close()
+    autopilot_pid = proc.pid
+    PID_FILE.write_text(str(proc.pid))
+    return {"ok": True, "pid": proc.pid}
 
 
 # ── Test Runner (SSE stream) ────────────────────────────────────────────────

@@ -179,7 +179,8 @@
       <a-space :size="12" align="center">
         <a-typography-text type="secondary" code style="font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;" :title="workspace">{{ workspace }}</a-typography-text>
         <a-divider type="vertical" />
-        <a-typography-text type="secondary" style="font-size: 13px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;" :title="goal">{{ goal }}</a-typography-text>
+        <a-typography-text type="secondary" style="font-size: 13px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; cursor: pointer;" :title="goal" @click="openChangeGoal">{{ goal }}</a-typography-text>
+        <a-button size="small" @click="openChangeGoal">Change Goal</a-button>
         <a-button v-if="autopilotRunning" danger size="small" @click="stopAutopilot">Stop</a-button>
         <a-button v-else size="small" @click="resetToLanding">New Goal</a-button>
       </a-space>
@@ -196,15 +197,19 @@
     <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
       <!-- Waiting state: autopilot running but no tasks yet -->
       <div v-if="tasks.length === 0 && autopilotRunning" style="flex: 1; display: flex; align-items: center; justify-content: center;">
-        <a-spin size="large">
-          <template #tip>
-            <div style="margin-top: 12px;">
-              <a-typography-text>Analyzing goal & creating tasks...</a-typography-text>
-              <br>
-              <a-typography-text type="secondary" style="font-size: 12px;">Check Live Output below for details</a-typography-text>
-            </div>
-          </template>
-        </a-spin>
+        <div style="text-align: center;">
+          <a-spin size="large" />
+          <div style="margin-top: 16px;">
+            <a-typography-text>{{ activities.length > 0 ? 'Working on it...' : 'Starting Claude Code...' }}</a-typography-text>
+            <br>
+            <a-typography-text v-if="activities.length > 0" type="secondary" style="font-size: 12px;">
+              {{ activities[activities.length - 1].summary }}
+            </a-typography-text>
+            <a-typography-text v-else type="secondary" style="font-size: 12px;">
+              Activity will appear in the panel below
+            </a-typography-text>
+          </div>
+        </div>
       </div>
 
       <!-- Kanban columns -->
@@ -240,17 +245,33 @@
         </div>
       </div>
 
-      <!-- Live Output Panel -->
+      <!-- Activity Feed Panel -->
       <div class="output-panel">
         <a-collapse v-model:activeKey="outputActiveKey" :bordered="false" style="background: transparent;">
           <a-collapse-panel key="output" style="border: none;">
             <template #header>
               <a-space>
-                <a-typography-text type="secondary" strong>Live Output</a-typography-text>
-                <a-tag v-if="autopilotRunning" color="success" :bordered="false" style="font-size: 11px;">streaming...</a-tag>
+                <a-typography-text type="secondary" strong>Activity</a-typography-text>
+                <a-tag v-if="autopilotRunning" color="success" :bordered="false" style="font-size: 11px;">live</a-tag>
+                <a-tag v-if="activities.length" :bordered="false" style="font-size: 11px;">{{ activities.length }}</a-tag>
               </a-space>
             </template>
-            <pre ref="liveLogEl" class="live-log-pre">{{ liveLog || 'Autopilot output will appear here...' }}</pre>
+            <!-- Activity Feed -->
+            <div ref="activityEl" style="max-height: 30vh; overflow: auto; padding: 8px 12px;">
+              <div v-if="activities.length === 0" style="text-align: center; padding: 16px;">
+                <a-typography-text type="secondary">Waiting for activity...</a-typography-text>
+              </div>
+              <div v-for="(a, i) in activities" :key="i"
+                   style="display: flex; align-items: flex-start; gap: 10px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px;">
+                <a-typography-text type="secondary" code style="font-size: 11px; flex-shrink: 0; min-width: 56px;">{{ a.timestamp }}</a-typography-text>
+                <span style="flex-shrink: 0; width: 20px; text-align: center;">{{ activityIcon(a.event) }}</span>
+                <a-typography-text :type="a.event === 'result' ? 'success' : a.event === 'text' ? 'secondary' : undefined"
+                                   style="font-size: 12px; line-height: 1.5; word-break: break-all;">
+                  <a-tag v-if="a.tool" :bordered="false" size="small" style="font-size: 10px; margin-right: 4px; vertical-align: middle;">{{ a.tool }}</a-tag>
+                  {{ a.summary }}
+                </a-typography-text>
+              </div>
+            </div>
           </a-collapse-panel>
         </a-collapse>
       </div>
@@ -314,6 +335,24 @@
       </template>
     </a-drawer>
 
+    <!-- Change Goal Modal -->
+    <a-modal v-model:open="changeGoalVisible"
+             title="Change Goal"
+             @ok="confirmChangeGoal"
+             :ok-text="autopilotRunning ? 'Stop & Restart' : 'Start'"
+             cancel-text="Cancel"
+             :ok-button-props="{ disabled: !newGoal.trim(), danger: autopilotRunning }"
+             :confirm-loading="changingGoal">
+      <div style="padding: 8px 0;">
+        <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 8px; display: block;">
+          {{ autopilotRunning ? 'The current autopilot will be stopped and restarted with the new goal.' : 'Enter a new goal to start autopilot.' }}
+        </a-typography-text>
+        <a-textarea v-model:value="newGoal" :rows="4"
+                    placeholder="Enter new goal..."
+                    style="margin-top: 8px;" />
+      </div>
+    </a-modal>
+
   </div>
 
   </a-config-provider>
@@ -335,9 +374,13 @@ const app = createApp({
     const taskCommits = ref([]);
     const autopilotRunning = ref(false);
     const pickingFolder = ref(false);
-    const liveLog = ref('');
-    const liveLogEl = ref(null);
+    const activities = ref([]);       // structured activity events
+    const activityEl = ref(null);     // scroll container ref
     const outputActiveKey = ref(['output']);
+    const MAX_ACTIVITIES = 200;
+    const changeGoalVisible = ref(false);
+    const newGoal = ref('');
+    const changingGoal = ref(false);
 
     // ── Theme config (dark mode) ─────────────────────────────────────
     const themeConfig = ref({
@@ -383,21 +426,30 @@ const app = createApp({
       autopilotRunning.value = data.running || false;
     };
 
-    const loadLiveLog = async () => {
-      const data = await api('/api/autopilot/logs?tail=500');
-      liveLog.value = (data.lines || []).join('');
-      await nextTick();
-      scrollLog();
-    };
-
     const loadCommits = async (taskId) => {
       taskCommits.value = await api(`/api/commits/${taskId}`);
     };
 
-    const scrollLog = () => {
-      if (liveLogEl.value) {
-        liveLogEl.value.scrollTop = liveLogEl.value.scrollHeight;
+    const scrollActivity = () => {
+      if (activityEl.value) {
+        activityEl.value.scrollTop = activityEl.value.scrollHeight;
       }
+    };
+
+    const activityIcon = (event) => ({
+      tool_use: '\u{1F527}',   // wrench
+      text: '\u{1F4AC}',       // speech bubble
+      result: '\u2705',        // checkmark
+      shell: '\u{1F4BB}',      // computer
+    }[event] || '\u{1F4A1}');  // lightbulb
+
+    const addActivity = async (a) => {
+      activities.value.push(a);
+      if (activities.value.length > MAX_ACTIVITIES) {
+        activities.value = activities.value.slice(-MAX_ACTIVITIES);
+      }
+      await nextTick();
+      scrollActivity();
     };
 
     // ── Actions ────────────────────────────────────────────────────────
@@ -423,7 +475,7 @@ const app = createApp({
       }
       autopilotRunning.value = true;
       view.value = 'running';
-      liveLog.value = '';
+      activities.value = [];
       localStorage.setItem('ap_workspace', workspace.value);
       localStorage.setItem('ap_goal', goal.value);
       localStorage.setItem('ap_view', 'running');
@@ -434,11 +486,42 @@ const app = createApp({
       autopilotRunning.value = false;
     };
 
+    const openChangeGoal = () => {
+      newGoal.value = goal.value;
+      changeGoalVisible.value = true;
+    };
+
+    const confirmChangeGoal = async () => {
+      if (!newGoal.value.trim()) return;
+      changingGoal.value = true;
+      try {
+        const res = await api('/api/autopilot/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goal: newGoal.value, workspace: workspace.value }),
+        });
+        if (!res.ok) {
+          error.value = res.error || 'Failed to restart';
+          return;
+        }
+        goal.value = newGoal.value;
+        autopilotRunning.value = true;
+        view.value = 'running';
+        tasks.value = [];
+        activities.value = [];
+        localStorage.setItem('ap_goal', goal.value);
+        localStorage.setItem('ap_view', 'running');
+        changeGoalVisible.value = false;
+      } finally {
+        changingGoal.value = false;
+      }
+    };
+
     const resetToLanding = () => {
       view.value = 'landing';
       tasks.value = [];
       selectedTask.value = null;
-      liveLog.value = '';
+      activities.value = [];
       goal.value = '';
       localStorage.removeItem('ap_view');
       localStorage.removeItem('ap_goal');
@@ -504,10 +587,8 @@ const app = createApp({
           location.reload();
           return;
         }
-        if (msg.type === 'autopilot_log') {
-          liveLog.value += msg.line;
-          await nextTick();
-          scrollLog();
+        if (msg.type === 'autopilot_activity') {
+          addActivity(msg);
         }
         if (msg.type === 'file_change') {
           await loadTasks();
@@ -532,12 +613,10 @@ const app = createApp({
       if (savedView === 'running' || savedView === 'done') {
         view.value = autopilotRunning.value ? 'running' : savedView;
         await loadTasks();
-        await loadLiveLog();
         checkCompletion();
       } else if (autopilotRunning.value && savedWorkspace) {
         view.value = 'running';
         await loadTasks();
-        await loadLiveLog();
       }
 
       connectWs();
@@ -553,10 +632,12 @@ const app = createApp({
     return {
       view, workspace, goal, error, recentWorkspaces,
       tasks, selectedTask, taskCommits,
-      autopilotRunning, liveLog, liveLogEl, outputActiveKey,
+      autopilotRunning, activities, activityEl, outputActiveKey,
       pickingFolder, columns, themeConfig,
+      changeGoalVisible, newGoal, changingGoal,
       pickFolder, startAutopilot, stopAutopilot, resetToLanding, selectTask,
-      tasksByStatus, statusColor, loadLiveLog,
+      openChangeGoal, confirmChangeGoal,
+      tasksByStatus, statusColor, activityIcon,
     };
   }
 });

@@ -218,6 +218,48 @@ def test_api_recent_summaries(client):
     assert "content" in data
 
 
+def test_api_workspaces_recent(client):
+    """GET /api/workspaces/recent should return a list."""
+    r = client.get("/api/workspaces/recent")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+
+
+def test_api_workspace_tasks(client):
+    """GET /api/workspace/tasks should return a list of parsed tasks."""
+    r = client.get("/api/workspace/tasks")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+
+
+def test_api_workspace_tasks_with_path(client):
+    """GET /api/workspace/tasks?path= should handle nonexistent path."""
+    r = client.get("/api/workspace/tasks?path=/nonexistent/path")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+    assert len(data) == 0
+
+
+def test_api_workspace_goal(client):
+    """GET /api/workspace/goal should return goal string."""
+    r = client.get("/api/workspace/goal")
+    assert r.status_code == 200
+    data = r.json()
+    assert "goal" in data
+
+
+def test_api_autopilot_restart_not_running(client):
+    """POST /api/autopilot/restart should handle restart when nothing is running."""
+    r = client.post("/api/autopilot/restart", json={"goal": "test goal", "workspace": "."})
+    assert r.status_code == 200
+    data = r.json()
+    # It should either start successfully or report an error — both are valid
+    assert "ok" in data
+
+
 def test_websocket_connection():
     """WebSocket /ws should accept connection."""
     import websockets.sync.client as ws_client
