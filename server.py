@@ -230,7 +230,22 @@ async def api_save_claude_md(req: SaveClaudeMdRequest):
 
 
 # ── Autopilot Control ────────────────────────────────────────────────────────
-autopilot_process: subprocess.Popen | None = None
+autopilot_process: asyncio.subprocess.Process | None = None
+autopilot_log_lines: list[str] = []
+MAX_LOG_LINES = 2000
+
+
+async def _read_autopilot_output(proc: asyncio.subprocess.Process):
+    """Read autopilot stdout line by line into the log buffer."""
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        text = line.decode(errors="replace")
+        autopilot_log_lines.append(text)
+        if len(autopilot_log_lines) > MAX_LOG_LINES:
+            del autopilot_log_lines[:len(autopilot_log_lines) - MAX_LOG_LINES]
+        await broadcast({"type": "autopilot_log", "line": text})
 
 
 @app.get("/api/autopilot/status")
@@ -242,8 +257,13 @@ async def api_autopilot_status():
             state = json.loads(state_file.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    running = autopilot_process is not None and autopilot_process.poll() is None
+    running = autopilot_process is not None and autopilot_process.returncode is None
     return {"running": running, **state}
+
+
+@app.get("/api/autopilot/logs")
+async def api_autopilot_logs(tail: int = 200):
+    return {"lines": autopilot_log_lines[-tail:]}
 
 
 class AutopilotStartRequest(BaseModel):
@@ -253,7 +273,7 @@ class AutopilotStartRequest(BaseModel):
 @app.post("/api/autopilot/start")
 async def api_autopilot_start(req: AutopilotStartRequest):
     global autopilot_process
-    if autopilot_process and autopilot_process.poll() is None:
+    if autopilot_process and autopilot_process.returncode is None:
         return {"ok": False, "error": "Already running"}
     goal = req.goal or "Continue from progress.md"
     script = PROJECT_DIR / "autopilot.sh"
@@ -261,24 +281,26 @@ async def api_autopilot_start(req: AutopilotStartRequest):
         return {"ok": False, "error": "autopilot.sh not found"}
     env = {**os.environ}
     env.pop("CLAUDECODE", None)  # allow nested launch
-    autopilot_process = subprocess.Popen(
-        ["bash", str(script), goal],
+    autopilot_log_lines.clear()
+    autopilot_process = await asyncio.create_subprocess_exec(
+        "bash", str(script), goal,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
         cwd=str(PROJECT_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
         env=env,
     )
+    asyncio.create_task(_read_autopilot_output(autopilot_process))
     return {"ok": True, "pid": autopilot_process.pid}
 
 
 @app.post("/api/autopilot/stop")
 async def api_autopilot_stop():
     global autopilot_process
-    if autopilot_process and autopilot_process.poll() is None:
+    if autopilot_process and autopilot_process.returncode is None:
         autopilot_process.terminate()
         try:
-            autopilot_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+            await asyncio.wait_for(autopilot_process.wait(), timeout=5)
+        except asyncio.TimeoutError:
             autopilot_process.kill()
         autopilot_process = None
         return {"ok": True}

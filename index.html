@@ -185,10 +185,28 @@
         </div>
       </div>
 
-      <!-- Log Stream -->
+      <!-- Live Autopilot Output -->
       <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
         <div class="flex items-center justify-between mb-4">
-          <h2 class="text-lg font-bold">Logs</h2>
+          <h2 class="text-lg font-bold">Live Output</h2>
+          <div class="flex items-center gap-2">
+            <label class="flex items-center gap-1 text-xs text-slate-400">
+              <input type="checkbox" v-model="autoScroll" class="rounded">
+              Auto-scroll
+            </label>
+            <button @click="autopilotLiveLog = ''; loadAutopilotLogs()"
+                    class="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600">
+              Refresh
+            </button>
+          </div>
+        </div>
+        <pre ref="liveLogEl" class="text-xs text-green-300 whitespace-pre-wrap font-mono max-h-[50vh] overflow-auto bg-black rounded p-3">{{ autopilotLiveLog || 'Autopilot output will appear here when running...' }}</pre>
+      </div>
+
+      <!-- Session Log Files -->
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold">Session Logs</h2>
           <select v-model="selectedLog" @change="loadLog(selectedLog)"
                   class="bg-slate-700 text-slate-200 text-xs rounded px-2 py-1 border border-slate-600">
             <option value="">Select log...</option>
@@ -424,6 +442,9 @@ createApp({
     const mermaidContainer = ref(null);
     const autopilotStatus = ref({});
     const autopilotGoal = ref('');
+    const autopilotLiveLog = ref('');
+    const liveLogEl = ref(null);
+    const autoScroll = ref(true);
 
     const tabs = [
       { id: 'kanban', label: 'Kanban' },
@@ -515,7 +536,17 @@ createApp({
       autopilotStatus.value = await api('/api/autopilot/status');
     };
 
+    const loadAutopilotLogs = async () => {
+      const data = await api('/api/autopilot/logs?tail=500');
+      autopilotLiveLog.value = (data.lines || []).join('');
+      await nextTick();
+      if (autoScroll.value && liveLogEl.value) {
+        liveLogEl.value.scrollTop = liveLogEl.value.scrollHeight;
+      }
+    };
+
     const startAutopilot = async () => {
+      autopilotLiveLog.value = '';
       await api('/api/autopilot/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -705,6 +736,13 @@ createApp({
           await loadAutopilotStatus();
           if (activeTab.value === 'graph') await renderGraph();
         }
+        if (msg.type === 'autopilot_log') {
+          autopilotLiveLog.value += msg.line;
+          await nextTick();
+          if (autoScroll.value && liveLogEl.value) {
+            liveLogEl.value.scrollTop = liveLogEl.value.scrollHeight;
+          }
+        }
       };
     };
 
@@ -712,7 +750,7 @@ createApp({
     watch(activeTab, async (tab) => {
       if (tab === 'progress') await loadProgress();
       if (tab === 'logs') await loadLogs();
-      if (tab === 'control') { await loadLogs(); await loadClaudeMd(); await loadAutopilotStatus(); }
+      if (tab === 'control') { await loadLogs(); await loadClaudeMd(); await loadAutopilotStatus(); await loadAutopilotLogs(); }
       if (tab === 'graph') { await nextTick(); await renderGraph(); }
     });
 
@@ -739,8 +777,10 @@ createApp({
       configEditing, logs, selectedLog, logContent, taskCommits, expandedDiff, diffContent,
       testCommand, testRunning, testOutputText, testOutput, wsConnected,
       activeTab, activeDetailTab, mermaidContainer, autopilotStatus, autopilotGoal,
+      autopilotLiveLog, liveLogEl, autoScroll,
       tabs, detailTabs, columns, criticalPath,
       loadTasks, loadLog, loadDiff, saveClaudeMd, startAutopilot, stopAutopilot, runTest,
+      loadAutopilotLogs,
       tasksByStatus, renderedProgress, renderedClaudeMd,
       isTaskCompleted, getTaskSubject, statusClass, selectTask, jumpToTask,
     };
