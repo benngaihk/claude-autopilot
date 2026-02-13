@@ -84,7 +84,7 @@ Task({
 
 文件: `.autopilot/progress.md`
 
-**每次 session 结束前必须更新此文件。** 这是你唯一的跨 session 记忆。
+**每次 session 结束前必须更新此文件。** 配合记忆系统，这是你的跨 session 记忆之一。
 
 格式:
 ```markdown
@@ -128,9 +128,56 @@ Task({
 - ❌ 不要输出超长的文件内容到 stdout（浪费 context）
 - ❌ 如果遇到需要密码/密钥的操作，跳过并在进度文件中标注
 
+## 自测规则
+
+- 修改 `server.py` 或 `index.html` 后，**必须** 运行 `pytest test_self.py -v`
+- 测试不通过 **不能 commit**，必须先修复
+- 也可以从 Dashboard 的 Control 面板点击 "Run Self-Test" 按钮触发
+- 新增 API 端点时，同步在 `test_self.py` 中添加对应测试
+
+## 记忆系统 (Memory System)
+
+项目支持类似 OpenClaw 的两层记忆架构：
+
+### 记忆目录结构
+```
+.autopilot/memory/
+├── MEMORY.md           # 长期记忆：架构决策、项目约定、关键偏好
+├── 2026-02-13.md       # 今日日志：工作记录、决策、下一步
+└── 2026-02-12.md       # 昨日日志
+.autopilot/summaries/
+├── session_001.md      # Session 1 摘要
+└── session_002.md      # Session 2 摘要
+```
+
+### 记忆写入规则
+- **长期记忆 (MEMORY.md)**: 写入稳定的架构决策、项目约定、关键配置、反复确认的模式
+- **每日日志 (YYYY-MM-DD.md)**: 追加当日工作亮点、决策理由、遇到的问题、下一步计划
+- **Session 摘要**: 每次 session 结束前写一份 2-3 段的摘要
+
+### 记忆注入
+autopilot.sh 在构建 prompt 时会自动注入:
+- MEMORY.md 的前 200 行
+- 今日 + 昨日日志
+- 最近 3 个 session 的摘要
+
+### 接近 context 限制时
+1. **先保存记忆** — 将关键信息写入 MEMORY.md 和每日日志
+2. 写 session 摘要到 `.autopilot/summaries/`
+3. 更新 progress.md
+4. 退出
+
+### Memory API
+- `GET/POST /api/memory` — 长期记忆
+- `GET /api/memory/daily` — 日志列表
+- `GET/POST /api/memory/daily/{date}` — 读写每日日志
+- `POST /api/memory/search` — 搜索所有记忆
+- `GET /api/memory/context` — 获取注入上下文
+- `GET/POST /api/summaries` — Session 摘要
+
 ## 效率原则
 
 - 先看现有代码再动手（ls、cat、git log）
 - 用 subagent 做调研，保留主 context 写代码
 - 大文件用 sed/awk 修改，不要整个读进来
-- 接近 context 限制时，立即保存进度退出
+- 接近 context 限制时，先保存记忆再退出

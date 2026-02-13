@@ -1,19 +1,28 @@
 # Autopilot 进度记录
 
-## 状态: 已完成
+## 状态: 进行中
+
+## 目标
+自我改进：为项目添加类似 OpenClaw 的记忆管理功能 + 无限上下文功能
 
 ## 已完成
-- [x] TASK-001: 创建 requirements.txt 和项目基础结构 (requirements.txt)
-- [x] TASK-002: 实现 FastAPI 后端 - REST API 读取任务数据 (server.py)
-- [x] TASK-003: 实现 FastAPI 后端 - WebSocket 实时推送 (server.py)
-- [x] TASK-004: 实现前端看板视图 - 四列看板 + 任务卡片 (index.html)
-- [x] TASK-005: 实现任务详情面板 - commit diff、测试运行、依赖导航 (index.html, server.py)
-- [x] TASK-006: 实现控制面板 - autopilot 启停、日志流、CLAUDE.md 编辑器 (index.html, server.py)
-- [x] TASK-007: 实现依赖图 - Mermaid DAG + 关键路径高亮 (index.html)
+- [x] TASK-001~006: 基础 Dashboard (Kanban/Progress/Graph/Control/Logs/Live Output)
+
+## 进行中
+- [ ] TASK-007: 实现记忆存储后端 — memory/ 目录管理、MEMORY.md 长期记忆 + YYYY-MM-DD.md 每日日志
+
+## 待办
+- [ ] TASK-008: 实现记忆管理 API — CRUD 接口 + 关键字搜索 + 日志追加（依赖 TASK-007）
+- [ ] TASK-009: 实现上下文压缩前自动记忆刷新 — autopilot.sh 中检测上下文接近极限时触发记忆保存（依赖 TASK-007）
+- [ ] TASK-010: 实现无限上下文功能 — 自动摘要 + 跨 session 上下文恢复 + 记忆注入 prompt（依赖 TASK-008, TASK-009）
+- [ ] TASK-011: 实现 Memory Dashboard UI — 新增 Memory Tab 显示 MEMORY.md + 每日日志浏览器 + 记忆编辑器 + 搜索（依赖 TASK-008）
+- [ ] TASK-012: 更新 autopilot.sh 集成记忆系统 — prompt 注入相关记忆 + session 结束自动保存记忆（依赖 TASK-009, TASK-010）
+- [ ] TASK-013: 添加测试并运行 self-test 验证所有新 API（依赖 TASK-011）
 
 ## 关键上下文
-- 后端: Python FastAPI + WebSocket, 单文件 server.py, lifespan handler
-- 前端: 单文件 index.html, Vue 3 CDN + Tailwind CDN + marked.js + mermaid.js
-- 数据源: ~/.claude/tasks/{session-uuid}/*.json
-- 后端端口: 8000
-- 启动命令: python3 server.py → http://localhost:8000
+- 技术栈: FastAPI (server.py) + Vue 3 CDN (index.html) + Bash (autopilot.sh)
+- 服务端口: 8000
+- 前端: 零构建 CDN 单文件
+- 文件系统存储，无数据库
+- 记忆系统设计参考 OpenClaw: 文件优先、Markdown 格式、两层记忆（长期 MEMORY.md + 短期每日日志）
+- 无限上下文方案: 上下文压缩前自动刷新记忆 + 跨 session 记忆注入 + 自动摘要

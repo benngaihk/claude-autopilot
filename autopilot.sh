@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+# ── 解除嵌套限制 ─────────────────────────────────────────────────────────────
+# 从 Dashboard (server.py) 或另一个 Claude Code 中启动时需要清除此变量
+unset CLAUDECODE 2>/dev/null || true
+
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 PROJECT_DIR="${2:-.}"                    # 项目目录，默认当前目录
 MAX_SESSIONS="${3:-10}"                  # 最多重启几轮
@@ -23,6 +27,9 @@ AUTOPILOT_DIR="$PROJECT_DIR/.autopilot"
 PROGRESS_FILE="$AUTOPILOT_DIR/progress.md"
 LOG_DIR="$AUTOPILOT_DIR/logs"
 STATE_FILE="$AUTOPILOT_DIR/state.json"
+MEMORY_DIR="$AUTOPILOT_DIR/memory"
+MEMORY_FILE="$MEMORY_DIR/MEMORY.md"
+SUMMARIES_DIR="$AUTOPILOT_DIR/summaries"
 
 # ── 颜色 ──────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -33,10 +40,40 @@ NC='\033[0m'
 
 # ── 初始化 ────────────────────────────────────────────────────────────────────
 init() {
-    mkdir -p "$AUTOPILOT_DIR" "$LOG_DIR"
+    local goal="$1"
+    mkdir -p "$AUTOPILOT_DIR" "$LOG_DIR" "$MEMORY_DIR" "$SUMMARIES_DIR"
 
-    # 初始化状态文件
-    if [ ! -f "$STATE_FILE" ]; then
+    # 保存当前目标，用于检测目标是否变更
+    local goal_file="$AUTOPILOT_DIR/current_goal.txt"
+    local prev_goal=""
+    if [ -f "$goal_file" ]; then
+        prev_goal=$(cat "$goal_file")
+    fi
+
+    # 如果目标变了，或者进度文件标记为已完成 → 重置进度
+    local need_reset=false
+    if [ "$goal" != "$prev_goal" ] && [ -n "$goal" ] && [ "$goal" != "Continue from progress.md" ]; then
+        need_reset=true
+        echo -e "${YELLOW}⚠ 检测到新目标，重置进度文件...${NC}"
+    elif [ -f "$PROGRESS_FILE" ] && grep -q "## 状态: 已完成" "$PROGRESS_FILE"; then
+        need_reset=true
+        echo -e "${YELLOW}⚠ 上一轮已完成，重置进度文件...${NC}"
+    fi
+
+    if [ "$need_reset" = true ]; then
+        # 归档旧进度文件
+        if [ -f "$PROGRESS_FILE" ]; then
+            local archive_name="progress_$(date +%Y%m%d_%H%M%S).md"
+            cp "$PROGRESS_FILE" "$AUTOPILOT_DIR/$archive_name"
+            echo -e "${CYAN}  旧进度已归档为 $archive_name${NC}"
+        fi
+    fi
+
+    # 保存当前目标
+    echo "$goal" > "$goal_file"
+
+    # 初始化/重置状态文件
+    if [ ! -f "$STATE_FILE" ] || [ "$need_reset" = true ]; then
         cat > "$STATE_FILE" << 'EOF'
 {
   "session_count": 0,
@@ -48,12 +85,15 @@ init() {
 EOF
     fi
 
-    # 初始化进度文件
-    if [ ! -f "$PROGRESS_FILE" ]; then
-        cat > "$PROGRESS_FILE" << 'EOF'
+    # 初始化/重置进度文件
+    if [ ! -f "$PROGRESS_FILE" ] || [ "$need_reset" = true ]; then
+        cat > "$PROGRESS_FILE" << EOF
 # Autopilot 进度记录
 
 ## 状态: 未开始
+
+## 目标
+${goal}
 
 ## 已完成
 （无）
@@ -65,12 +105,69 @@ EOF
 （等待首次 session 拆解）
 EOF
     fi
+}
 
-    # 确保 Agent Teams 已启用
-    if ! claude settings get env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 2>/dev/null | grep -q "1"; then
-        echo -e "${YELLOW}⚠ 正在启用 Agent Teams...${NC}"
-        claude settings set env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS 1 2>/dev/null || true
+# ── 加载记忆上下文 ────────────────────────────────────────────────────────────
+load_memory_context() {
+    local memory_context=""
+
+    # 长期记忆
+    if [ -f "$MEMORY_FILE" ]; then
+        local mem_content
+        mem_content=$(head -200 "$MEMORY_FILE")
+        if [ -n "$mem_content" ]; then
+            memory_context="${memory_context}
+### 长期记忆 (MEMORY.md)
+${mem_content}
+"
+        fi
     fi
+
+    # 今日日志
+    local today
+    today=$(date +%Y-%m-%d)
+    local today_log="$MEMORY_DIR/${today}.md"
+    if [ -f "$today_log" ]; then
+        local today_content
+        today_content=$(tail -100 "$today_log")
+        memory_context="${memory_context}
+### 今日日志 (${today})
+${today_content}
+"
+    fi
+
+    # 昨日日志
+    local yesterday
+    yesterday=$(date -v-1d +%Y-%m-%d 2>/dev/null || date -d "yesterday" +%Y-%m-%d 2>/dev/null || echo "")
+    if [ -n "$yesterday" ]; then
+        local yesterday_log="$MEMORY_DIR/${yesterday}.md"
+        if [ -f "$yesterday_log" ]; then
+            local yesterday_content
+            yesterday_content=$(tail -50 "$yesterday_log")
+            memory_context="${memory_context}
+### 昨日日志 (${yesterday})
+${yesterday_content}
+"
+        fi
+    fi
+
+    # 最近 session 摘要
+    if [ -d "$SUMMARIES_DIR" ]; then
+        local recent_summaries
+        recent_summaries=$(ls -t "$SUMMARIES_DIR"/*.md 2>/dev/null | head -3)
+        if [ -n "$recent_summaries" ]; then
+            memory_context="${memory_context}
+### 最近 Session 摘要
+"
+            for f in $recent_summaries; do
+                memory_context="${memory_context}$(cat "$f")
+---
+"
+            done
+        fi
+    fi
+
+    echo "$memory_context"
 }
 
 # ── 构建 Prompt ──────────────────────────────────────────────────────────────
@@ -78,10 +175,14 @@ build_prompt() {
     local goal="$1"
     local session_num="$2"
     local progress=""
+    local memory_context=""
 
     if [ -f "$PROGRESS_FILE" ]; then
         progress=$(cat "$PROGRESS_FILE")
     fi
+
+    # 加载记忆上下文
+    memory_context=$(load_memory_context)
 
     cat << PROMPT
 ## 目标
@@ -97,6 +198,9 @@ ${goal}
 
 ## 上次进度
 ${progress}
+
+## 记忆上下文
+${memory_context}
 
 ## 工作流程
 
@@ -119,8 +223,13 @@ ${progress}
 
 ### 每次 Session 结束前（必须做）
 1. git add + git commit 所有变更
-2. 更新 ${PROGRESS_FILE}，格式如下：
+2. 更新 ${PROGRESS_FILE}
+3. **记忆管理**: 将本次 session 的关键决策和发现写入记忆系统:
+   - 重要决策、偏好、架构约定 → 写入 \`${MEMORY_FILE}\`
+   - 当日工作内容、下一步计划 → 追加到 \`${MEMORY_DIR}/$(date +%Y-%m-%d).md\`
+   - 提供本次 session 的简短摘要（2-3段），保存到 \`${SUMMARIES_DIR}/session_$(printf '%03d' $session_num).md\`
 
+进度文件格式:
 \`\`\`markdown
 # Autopilot 进度记录
 
@@ -150,7 +259,7 @@ ${progress}
 - 每完成一个任务就 git commit，格式: [TASK-ID] type: description
 - 绝对不要 git push --force
 - 绝对不要删除 .env、package.json、pom.xml 等关键文件
-- 如果接近上下文限制，立即停下来更新进度文件
+- 如果接近上下文限制，立即停下来：**先保存记忆**，再更新进度文件
 
 PROMPT
 }
@@ -190,16 +299,13 @@ if not s['started_at']:
 json.dump(s, open('$STATE_FILE', 'w'), indent=2)
 " 2>/dev/null || true
 
-    # 执行 Claude Code
-    # -p: 非交互模式（传入 prompt 直接执行）
-    # --max-turns: 限制单次 session 交互轮数
-    # --output-format: stream-json 便于解析
     echo -e "${GREEN}▶ 启动 Claude Code...${NC}"
 
     set +e
+    # 不加任何管道/重定向，让 claude 直接输出到终端
     claude -p "$prompt" \
         --max-turns "$MAX_TURNS" \
-        2>&1 | tee "$log_file"
+        --dangerously-skip-permissions
     local exit_code=$?
     set -e
 
@@ -210,6 +316,22 @@ json.dump(s, open('$STATE_FILE', 'w'), indent=2)
     echo "---" >> "$log_file"
     echo "Exit code: $exit_code" >> "$log_file"
     echo "Ended at: $(date -Iseconds)" >> "$log_file"
+
+    # 自动追加每日日志条目
+    local today
+    today=$(date +%Y-%m-%d)
+    local today_log="$MEMORY_DIR/${today}.md"
+    local timestamp
+    timestamp=$(date +%H:%M:%S)
+    local log_entry="
+### ${timestamp} — Session ${session_num} 自动记录
+- Exit code: ${exit_code}
+- 日志: $(basename "$log_file")
+"
+    if [ ! -f "$today_log" ]; then
+        echo "# Daily Log — ${today}" > "$today_log"
+    fi
+    echo "$log_entry" >> "$today_log"
 
     return $exit_code
 }
@@ -229,7 +351,7 @@ main() {
     echo -e "  最大轮次: ${CYAN}${MAX_SESSIONS}${NC}"
     echo ""
 
-    init
+    init "$goal"
 
     cd "$PROJECT_DIR"
 
