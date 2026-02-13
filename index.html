@@ -606,7 +606,9 @@ const app = createApp({
         localStorage.setItem('ap_view', 'planning');
 
         // Poll for plan completion
+        let planPollCount = 0;
         const pollPlan = setInterval(async () => {
+          planPollCount++;
           const status = await loadPlanStatus();
           if (status.status === 'done') {
             clearInterval(pollPlan);
@@ -620,6 +622,22 @@ const app = createApp({
             error.value = status.error || 'Planning failed';
             view.value = 'landing';
             localStorage.setItem('ap_view', 'landing');
+          } else if (status.status === 'idle' && planPollCount > 3) {
+            // Server may have restarted — check if tasks already exist
+            await loadTasks();
+            if (tasks.value.length > 0) {
+              clearInterval(pollPlan);
+              planLoading.value = false;
+              view.value = 'dashboard';
+              localStorage.setItem('ap_view', 'dashboard');
+            } else {
+              // No tasks and idle — planning was lost
+              clearInterval(pollPlan);
+              planLoading.value = false;
+              error.value = 'Planning session was interrupted. Please try again.';
+              view.value = 'landing';
+              localStorage.setItem('ap_view', 'landing');
+            }
           } else {
             planMessage.value = status.status === 'planning' ? 'Analyzing codebase and generating tasks...' : '';
           }
@@ -873,17 +891,51 @@ const app = createApp({
         await loadTasks();
         checkCompletion();
       } else if (savedView === 'planning') {
-        // Check if planning is still in progress
+        // Check if planning is still in progress or already done
         const status = await loadPlanStatus();
         if (status.status === 'planning') {
           view.value = 'planning';
-        } else if (status.status === 'done') {
-          await loadTasks();
-          view.value = tasks.value.length > 0 ? 'dashboard' : 'landing';
-          localStorage.setItem('ap_view', view.value);
+          // Re-start polling for completion
+          planLoading.value = true;
+          let planPollCount = 0;
+          const pollPlan = setInterval(async () => {
+            planPollCount++;
+            const s = await loadPlanStatus();
+            if (s.status === 'done') {
+              clearInterval(pollPlan);
+              planLoading.value = false;
+              await loadTasks();
+              view.value = 'dashboard';
+              localStorage.setItem('ap_view', 'dashboard');
+            } else if (s.status === 'error') {
+              clearInterval(pollPlan);
+              planLoading.value = false;
+              error.value = s.error || 'Planning failed';
+              view.value = 'landing';
+              localStorage.setItem('ap_view', 'landing');
+            } else if (s.status === 'idle' && planPollCount > 3) {
+              await loadTasks();
+              clearInterval(pollPlan);
+              planLoading.value = false;
+              if (tasks.value.length > 0) {
+                view.value = 'dashboard';
+                localStorage.setItem('ap_view', 'dashboard');
+              } else {
+                view.value = 'landing';
+                localStorage.setItem('ap_view', 'landing');
+              }
+            }
+          }, 1500);
         } else {
-          view.value = 'landing';
-          localStorage.setItem('ap_view', 'landing');
+          // Status is done, idle, or error — check if tasks exist on disk
+          await loadTasks();
+          if (tasks.value.length > 0) {
+            view.value = 'dashboard';
+            localStorage.setItem('ap_view', 'dashboard');
+          } else {
+            view.value = 'landing';
+            localStorage.setItem('ap_view', 'landing');
+          }
         }
       }
 
