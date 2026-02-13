@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(brew install:*)",
+      "Bash(gh repo create:*)",
+      "Bash(chmod:*)",
+      "Bash(./autopilot.sh \"构建 Claude Autopilot 可视化管理系统。\n\n## 目标产物\n\n一个 Web UI + Python 后端，用来可视化管理 Claude Code Agent Teams 的任务执行。\n\n## 技术栈\n- 后端: Python FastAPI + WebSocket\n- 前端: 单文件 HTML（内嵌 Vue 3 CDN + Tailwind CDN，不要用 npm 构建）\n- 数据源: 直接读取 ~/.claude/tasks/ 和 ~/.claude/teams/ 目录\n\n## 核心功能（按优先级）\n\n### P0: 看板视图\n- 四列看板: pending / in_progress / completed / failed\n- 读取 ~/.claude/tasks/{team}/*.json 渲染任务卡片\n- 卡片显示: ID、标题、owner、状态、依赖关系\n- WebSocket 实时刷新（watchfiles 监听文件变化）\n- 支持选择不同的 team\n\n### P1: 任务详情面板\n- 点击卡片右侧滑出详情\n- 方案 Tab: 显示 .autopilot/plans/TASK-ID.md（Markdown 渲染）\n- 代码 Tab: 执行 git log --grep=[TASK-ID] 获取关联 commit，展示文件列表和 diff\n- 测试 Tab: 一个按钮触发 pytest / playwright test，流式显示输出\n- 通信 Tab: 读取 teammate inbox JSON 展示 Agent 间消息\n\n### P2: 控制面板\n- 启动/停止 autopilot.sh 的按钮\n- 实时日志流（读 .autopilot/logs/）\n- 规则配置编辑器（编辑 CLAUDE.md）\n\n### P3: 依赖图\n- 用 Mermaid.js 渲染任务 DAG\n- 显示关键路径\n\n## 文件结构\nclaude-autopilot/\n├── autopilot.sh        # 已有\n├── CLAUDE.md           # 已有\n├── server.py           # FastAPI 后端（单文件）\n├── index.html          # 前端（单文件，CDN 引入）\n├── requirements.txt    # Python 依赖\n└── .autopilot/\n    ├── progress.md\n    └── logs/\n\n## 约束\n- 前端必须是单个 HTML 文件，用 CDN 引入 Vue 3 和 Tailwind，不要用 npm\n- 后端必须是单个 Python 文件\n- 先做 P0 能跑起来，再做 P1、P2、P3\n- 每完成一个优先级就 git commit\")",
+      "Bash(cat:*)",
+      "Bash(pip3 install:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(git push:*)",
+      "Bash(python -c:*)",
+      "Bash(python:*)",
+      "Bash(claude:*)",
+      "Bash(kill:*)",
+      "Bash(echo:*)",
+      "Bash(ls:*)",
+      "Bash(unset:*)",
+      "Bash(pkill:*)",
+      "Bash(pkill -f 'claude.*-p.*目标')",
+      "Bash(git -C /Users/kamyuenngai/Desktop/Ben/claude-autopilot log --oneline -10)",
+      "Bash(gh repo view:*)",
+      "Bash(gh api:*)"
+    ]
+  }
+}
