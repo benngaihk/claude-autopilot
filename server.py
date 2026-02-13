@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.requests import Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from pydantic import BaseModel
 from watchfiles import awatch
 
 
@@ -214,6 +216,100 @@ async def api_diff(commit_hash: str):
 @app.get("/api/claude-md")
 async def api_claude_md():
     return {"content": read_claude_md()}
+
+
+class SaveClaudeMdRequest(BaseModel):
+    content: str
+
+
+@app.post("/api/claude-md")
+async def api_save_claude_md(req: SaveClaudeMdRequest):
+    path = PROJECT_DIR / "CLAUDE.md"
+    path.write_text(req.content)
+    return {"ok": True}
+
+
+# ── Autopilot Control ────────────────────────────────────────────────────────
+autopilot_process: subprocess.Popen | None = None
+
+
+@app.get("/api/autopilot/status")
+async def api_autopilot_status():
+    state_file = AUTOPILOT_DIR / "state.json"
+    state = {}
+    if state_file.is_file():
+        try:
+            state = json.loads(state_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    running = autopilot_process is not None and autopilot_process.poll() is None
+    return {"running": running, **state}
+
+
+class AutopilotStartRequest(BaseModel):
+    goal: str = ""
+
+
+@app.post("/api/autopilot/start")
+async def api_autopilot_start(req: AutopilotStartRequest):
+    global autopilot_process
+    if autopilot_process and autopilot_process.poll() is None:
+        return {"ok": False, "error": "Already running"}
+    goal = req.goal or "Continue from progress.md"
+    script = PROJECT_DIR / "autopilot.sh"
+    if not script.is_file():
+        return {"ok": False, "error": "autopilot.sh not found"}
+    env = {**os.environ}
+    env.pop("CLAUDECODE", None)  # allow nested launch
+    autopilot_process = subprocess.Popen(
+        ["bash", str(script), goal],
+        cwd=str(PROJECT_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
+    return {"ok": True, "pid": autopilot_process.pid}
+
+
+@app.post("/api/autopilot/stop")
+async def api_autopilot_stop():
+    global autopilot_process
+    if autopilot_process and autopilot_process.poll() is None:
+        autopilot_process.terminate()
+        try:
+            autopilot_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            autopilot_process.kill()
+        autopilot_process = None
+        return {"ok": True}
+    return {"ok": False, "error": "Not running"}
+
+
+# ── Test Runner (SSE stream) ────────────────────────────────────────────────
+class TestRunRequest(BaseModel):
+    command: str = "pytest"
+
+
+@app.post("/api/test/run")
+async def api_test_run(req: TestRunRequest):
+    allowed = ["pytest", "python -m pytest", "playwright test"]
+    cmd = req.command.strip()
+    if not any(cmd.startswith(a) for a in allowed):
+        return {"error": "Command not allowed"}
+
+    async def stream():
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=str(PROJECT_DIR),
+        )
+        async for line in proc.stdout:
+            yield f"data: {json.dumps({'line': line.decode(errors='replace')})}\n\n"
+        await proc.wait()
+        yield f"data: {json.dumps({'done': True, 'returncode': proc.returncode})}\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 # ── WebSocket ────────────────────────────────────────────────────────────────

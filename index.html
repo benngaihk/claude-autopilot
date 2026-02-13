@@ -50,6 +50,11 @@
       </span>
       <span v-if="wsConnected" class="w-2 h-2 rounded-full bg-green-400" title="WebSocket connected"></span>
       <span v-else class="w-2 h-2 rounded-full bg-red-400 pulse" title="WebSocket disconnected"></span>
+      <!-- Autopilot Status -->
+      <span v-if="autopilotStatus.running"
+            class="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-300 flex items-center gap-1">
+        <span class="w-1.5 h-1.5 rounded-full bg-green-400 pulse"></span> Running
+      </span>
     </div>
 
     <div class="flex items-center gap-4">
@@ -83,14 +88,12 @@
     <div v-if="activeTab === 'kanban'" class="flex gap-4 overflow-x-auto">
       <div v-for="col in columns" :key="col.status"
            class="kanban-col flex-1 min-w-[280px] max-w-[360px]">
-        <!-- Column Header -->
         <div :class="['rounded-t-lg px-4 py-2 flex items-center justify-between', col.headerClass]">
           <span class="font-semibold text-sm">{{ col.label }}</span>
           <span class="bg-black/20 text-xs px-2 py-0.5 rounded-full">
             {{ tasksByStatus(col.status).length }}
           </span>
         </div>
-        <!-- Cards -->
         <div class="bg-slate-800/50 rounded-b-lg p-2 space-y-2 min-h-[200px]">
           <div v-for="task in tasksByStatus(col.status)" :key="task.id"
                @click="selectTask(task)"
@@ -108,7 +111,6 @@
               </span>
             </div>
             <p class="text-sm font-medium mt-1 leading-snug">{{ task.subject }}</p>
-            <!-- Dependencies -->
             <div v-if="task.blockedBy?.length" class="mt-2 flex flex-wrap gap-1">
               <span v-for="dep in task.blockedBy" :key="dep"
                     :class="[
@@ -143,6 +145,85 @@
       </div>
     </div>
 
+    <!-- Control Panel (P2) -->
+    <div v-if="activeTab === 'control'" class="max-w-5xl mx-auto space-y-6">
+      <!-- Autopilot Control -->
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <h2 class="text-lg font-bold mb-4">Autopilot Control</h2>
+        <div class="flex items-center gap-4 mb-4">
+          <div class="flex-1">
+            <input v-model="autopilotGoal" placeholder="Goal (e.g. 'Build user auth module')"
+                   class="w-full bg-slate-700 text-slate-200 text-sm rounded px-3 py-2 border border-slate-600 focus:border-blue-500 outline-none"
+                   :disabled="autopilotStatus.running">
+          </div>
+          <button v-if="!autopilotStatus.running"
+                  @click="startAutopilot"
+                  class="px-4 py-2 bg-green-600 hover:bg-green-500 rounded text-sm font-medium transition-colors">
+            Start
+          </button>
+          <button v-else
+                  @click="stopAutopilot"
+                  class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-sm font-medium transition-colors">
+            Stop
+          </button>
+        </div>
+        <div class="grid grid-cols-3 gap-4 text-sm">
+          <div class="bg-slate-900 rounded p-3">
+            <span class="text-slate-500">Sessions</span>
+            <p class="text-xl font-bold">{{ autopilotStatus.session_count || 0 }}</p>
+          </div>
+          <div class="bg-slate-900 rounded p-3">
+            <span class="text-slate-500">Status</span>
+            <p class="text-xl font-bold" :class="autopilotStatus.running ? 'text-green-400' : 'text-slate-400'">
+              {{ autopilotStatus.running ? 'Running' : (autopilotStatus.status || 'idle') }}
+            </p>
+          </div>
+          <div class="bg-slate-900 rounded p-3">
+            <span class="text-slate-500">Started</span>
+            <p class="text-sm font-mono">{{ autopilotStatus.started_at ? new Date(autopilotStatus.started_at).toLocaleString() : '-' }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Log Stream -->
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold">Logs</h2>
+          <select v-model="selectedLog" @change="loadLog(selectedLog)"
+                  class="bg-slate-700 text-slate-200 text-xs rounded px-2 py-1 border border-slate-600">
+            <option value="">Select log...</option>
+            <option v-for="log in logs" :key="log.name" :value="log.name">{{ log.name }}</option>
+          </select>
+        </div>
+        <pre class="text-xs text-slate-300 whitespace-pre-wrap font-mono max-h-[40vh] overflow-auto bg-slate-900 rounded p-3">{{ logContent || 'No log selected...' }}</pre>
+      </div>
+
+      <!-- CLAUDE.md Editor -->
+      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold">CLAUDE.md Editor</h2>
+          <div class="flex gap-2">
+            <button @click="configEditing = !configEditing"
+                    :class="[
+                      'px-3 py-1 rounded text-xs font-medium transition-colors',
+                      configEditing ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                    ]">
+              {{ configEditing ? 'Preview' : 'Edit' }}
+            </button>
+            <button v-if="configEditing" @click="saveClaudeMd"
+                    class="px-3 py-1 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors">
+              Save
+            </button>
+          </div>
+        </div>
+        <div v-if="configEditing">
+          <textarea v-model="claudeMdDraft"
+                    class="w-full h-[50vh] bg-slate-900 text-slate-300 text-sm font-mono rounded p-4 border border-slate-600 focus:border-blue-500 outline-none resize-none"></textarea>
+        </div>
+        <div v-else class="markdown-body text-slate-300 max-h-[50vh] overflow-auto" v-html="renderedClaudeMd"></div>
+      </div>
+    </div>
+
     <!-- Logs View -->
     <div v-if="activeTab === 'logs'" class="max-w-5xl mx-auto">
       <div class="flex gap-4">
@@ -168,18 +249,21 @@
       </div>
     </div>
 
-    <!-- Config View -->
-    <div v-if="activeTab === 'config'" class="max-w-4xl mx-auto">
+    <!-- Dependency Graph (P3) -->
+    <div v-if="activeTab === 'graph'" class="max-w-6xl mx-auto">
       <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 class="text-lg font-bold mb-4">CLAUDE.md</h2>
-        <div class="markdown-body text-slate-300" v-html="renderedClaudeMd"></div>
-      </div>
-    </div>
-
-    <!-- Dependency Graph -->
-    <div v-if="activeTab === 'graph'" class="max-w-5xl mx-auto">
-      <div class="bg-slate-800 rounded-lg p-6 border border-slate-700">
-        <h2 class="text-lg font-bold mb-4">Task Dependency Graph</h2>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold">Task Dependency Graph</h2>
+          <div class="flex items-center gap-4 text-xs">
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-green-600 inline-block"></span> Completed</span>
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-blue-600 inline-block"></span> In Progress</span>
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-slate-600 inline-block"></span> Pending</span>
+            <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-red-600 inline-block"></span> Failed</span>
+            <span v-if="criticalPath.length" class="text-yellow-300 font-medium">
+              Critical path: {{ criticalPath.map(id => '#' + id).join(' -> ') }}
+            </span>
+          </div>
+        </div>
         <div v-if="tasks.length === 0" class="text-slate-500 text-center py-8">
           Select a session to view dependency graph
         </div>
@@ -188,10 +272,10 @@
     </div>
   </main>
 
-  <!-- Task Detail Slide-over -->
+  <!-- Task Detail Slide-over (P1) -->
   <Transition name="slide">
     <div v-if="selectedTask && activeTab === 'kanban'"
-         class="fixed top-0 right-0 h-full w-[480px] bg-slate-800 border-l border-slate-700 z-50 shadow-2xl flex flex-col">
+         class="fixed top-0 right-0 h-full w-[520px] bg-slate-800 border-l border-slate-700 z-50 shadow-2xl flex flex-col">
       <!-- Header -->
       <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between shrink-0">
         <div>
@@ -199,7 +283,7 @@
           <h3 class="text-sm font-bold">{{ selectedTask.subject }}</h3>
         </div>
         <button @click="selectedTask = null"
-                class="text-slate-400 hover:text-white text-lg">&times;</button>
+                class="text-slate-400 hover:text-white text-lg px-2">&times;</button>
       </div>
 
       <!-- Detail Tabs -->
@@ -218,7 +302,7 @@
 
       <!-- Detail Content -->
       <div class="flex-1 overflow-auto p-4">
-        <!-- Description -->
+        <!-- Description Tab -->
         <div v-if="activeDetailTab === 'desc'">
           <div class="text-sm text-slate-300 whitespace-pre-wrap">{{ selectedTask.description || 'No description' }}</div>
           <div class="mt-4 space-y-2">
@@ -233,26 +317,53 @@
           </div>
         </div>
 
-        <!-- Commits -->
+        <!-- Commits Tab -->
         <div v-if="activeDetailTab === 'code'">
           <div v-if="taskCommits.length === 0" class="text-slate-500 text-sm">No commits found for this task</div>
-          <div v-for="c in taskCommits" :key="c.hash" class="mb-3 bg-slate-900 rounded p-3">
-            <div class="flex items-center gap-2">
-              <span class="font-mono text-xs text-blue-400">{{ c.hash }}</span>
-              <span class="text-xs text-slate-500">{{ c.date }}</span>
+          <div v-for="c in taskCommits" :key="c.hash" class="mb-3">
+            <div class="bg-slate-900 rounded p-3 cursor-pointer hover:bg-slate-900/80"
+                 @click="loadDiff(c.hash)">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-xs text-blue-400">{{ c.hash }}</span>
+                <span class="text-xs text-slate-500">{{ c.date }}</span>
+              </div>
+              <p class="text-sm mt-1">{{ c.message }}</p>
+              <p class="text-xs text-slate-500 mt-1">{{ c.author }}</p>
             </div>
-            <p class="text-sm mt-1">{{ c.message }}</p>
-            <p class="text-xs text-slate-500 mt-1">{{ c.author }}</p>
+            <pre v-if="expandedDiff === c.hash" class="text-xs text-slate-400 bg-slate-950 rounded-b p-3 font-mono overflow-x-auto max-h-64">{{ diffContent }}</pre>
           </div>
         </div>
 
-        <!-- Dependencies -->
+        <!-- Test Tab -->
+        <div v-if="activeDetailTab === 'test'">
+          <div class="flex items-center gap-2 mb-4">
+            <select v-model="testCommand"
+                    class="bg-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 border border-slate-600 outline-none">
+              <option value="pytest">pytest</option>
+              <option value="python -m pytest">python -m pytest</option>
+              <option value="playwright test">playwright test</option>
+            </select>
+            <button @click="runTest" :disabled="testRunning"
+                    :class="[
+                      'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+                      testRunning
+                        ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
+                        : 'bg-green-600 hover:bg-green-500 text-white'
+                    ]">
+              {{ testRunning ? 'Running...' : 'Run Test' }}
+            </button>
+          </div>
+          <pre ref="testOutput" class="text-xs text-slate-300 whitespace-pre-wrap font-mono max-h-[50vh] overflow-auto bg-slate-900 rounded p-3">{{ testOutputText || 'Click "Run Test" to start...' }}</pre>
+        </div>
+
+        <!-- Dependencies Tab -->
         <div v-if="activeDetailTab === 'deps'">
           <h4 class="text-xs font-semibold text-slate-400 mb-2">Blocked By</h4>
           <div v-if="!selectedTask.blockedBy?.length" class="text-sm text-slate-500 mb-4">None</div>
           <div v-else class="space-y-1 mb-4">
             <div v-for="dep in selectedTask.blockedBy" :key="dep"
-                 class="flex items-center gap-2 text-sm">
+                 @click="jumpToTask(dep)"
+                 class="flex items-center gap-2 text-sm cursor-pointer hover:text-white transition-colors">
               <span :class="isTaskCompleted(dep) ? 'text-green-400' : 'text-yellow-400'">
                 {{ isTaskCompleted(dep) ? '\u2713' : '\u25cb' }}
               </span>
@@ -264,7 +375,8 @@
           <div v-if="!selectedTask.blocks?.length" class="text-sm text-slate-500">None</div>
           <div v-else class="space-y-1">
             <div v-for="b in selectedTask.blocks" :key="b"
-                 class="flex items-center gap-2 text-sm">
+                 @click="jumpToTask(b)"
+                 class="flex items-center gap-2 text-sm cursor-pointer hover:text-white transition-colors">
               <span class="font-mono text-xs">#{{ b }}</span>
               <span class="text-slate-400">{{ getTaskSubject(b) }}</span>
             </div>
@@ -294,26 +406,37 @@ createApp({
     const selectedTask = ref(null);
     const progress = ref('');
     const claudeMd = ref('');
+    const claudeMdDraft = ref('');
+    const configEditing = ref(false);
     const logs = ref([]);
     const selectedLog = ref('');
     const logContent = ref('');
     const taskCommits = ref([]);
+    const expandedDiff = ref('');
+    const diffContent = ref('');
+    const testCommand = ref('pytest');
+    const testRunning = ref(false);
+    const testOutputText = ref('');
+    const testOutput = ref(null);
     const wsConnected = ref(false);
     const activeTab = ref('kanban');
     const activeDetailTab = ref('desc');
     const mermaidContainer = ref(null);
+    const autopilotStatus = ref({});
+    const autopilotGoal = ref('');
 
     const tabs = [
       { id: 'kanban', label: 'Kanban' },
       { id: 'progress', label: 'Progress' },
       { id: 'graph', label: 'Graph' },
+      { id: 'control', label: 'Control' },
       { id: 'logs', label: 'Logs' },
-      { id: 'config', label: 'Config' },
     ];
 
     const detailTabs = [
       { id: 'desc', label: 'Description' },
       { id: 'code', label: 'Commits' },
+      { id: 'test', label: 'Test' },
       { id: 'deps', label: 'Dependencies' },
     ];
 
@@ -325,8 +448,8 @@ createApp({
     ];
 
     // API helpers
-    const api = async (path) => {
-      const res = await fetch(path);
+    const api = async (path, opts) => {
+      const res = await fetch(path, opts);
       return res.json();
     };
 
@@ -352,6 +475,17 @@ createApp({
     const loadClaudeMd = async () => {
       const data = await api('/api/claude-md');
       claudeMd.value = data.content || '';
+      if (!configEditing.value) claudeMdDraft.value = claudeMd.value;
+    };
+
+    const saveClaudeMd = async () => {
+      await api('/api/claude-md', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: claudeMdDraft.value }),
+      });
+      claudeMd.value = claudeMdDraft.value;
+      configEditing.value = false;
     };
 
     const loadLogs = async () => {
@@ -359,6 +493,7 @@ createApp({
     };
 
     const loadLog = async (name) => {
+      if (!name) return;
       selectedLog.value = name;
       const data = await api(`/api/logs/${name}`);
       logContent.value = data.content || '';
@@ -366,6 +501,72 @@ createApp({
 
     const loadCommits = async (taskId) => {
       taskCommits.value = await api(`/api/commits/${taskId}`);
+      expandedDiff.value = '';
+    };
+
+    const loadDiff = async (hash) => {
+      if (expandedDiff.value === hash) { expandedDiff.value = ''; return; }
+      const data = await api(`/api/diff/${hash}`);
+      diffContent.value = data.content || '';
+      expandedDiff.value = hash;
+    };
+
+    const loadAutopilotStatus = async () => {
+      autopilotStatus.value = await api('/api/autopilot/status');
+    };
+
+    const startAutopilot = async () => {
+      await api('/api/autopilot/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: autopilotGoal.value }),
+      });
+      await loadAutopilotStatus();
+    };
+
+    const stopAutopilot = async () => {
+      await api('/api/autopilot/stop', { method: 'POST' });
+      await loadAutopilotStatus();
+    };
+
+    // Test runner (SSE)
+    const runTest = async () => {
+      testRunning.value = true;
+      testOutputText.value = '';
+      try {
+        const res = await fetch('/api/test/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: testCommand.value }),
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.line) testOutputText.value += data.line;
+                if (data.done) {
+                  testOutputText.value += `\n--- Exit code: ${data.returncode} ---`;
+                }
+              } catch {}
+            }
+          }
+          if (testOutput.value) {
+            testOutput.value.scrollTop = testOutput.value.scrollHeight;
+          }
+        }
+      } catch (e) {
+        testOutputText.value += `\nError: ${e.message}`;
+      }
+      testRunning.value = false;
     };
 
     // Computed
@@ -403,6 +604,40 @@ createApp({
       return map[status] || '';
     };
 
+    // Critical path computation (P3)
+    const criticalPath = computed(() => {
+      if (tasks.value.length === 0) return [];
+      const incomplete = tasks.value.filter(t => t.status !== 'completed');
+      if (incomplete.length === 0) return [];
+      const taskMap = {};
+      tasks.value.forEach(t => { taskMap[t.id] = t; });
+      // Find longest path among incomplete tasks
+      const memo = {};
+      const longestFrom = (id) => {
+        if (memo[id] !== undefined) return memo[id];
+        const t = taskMap[id];
+        if (!t || !t.blocks?.length) { memo[id] = [id]; return [id]; }
+        let best = [];
+        for (const b of t.blocks) {
+          if (taskMap[b] && taskMap[b].status !== 'completed') {
+            const path = longestFrom(b);
+            if (path.length > best.length) best = path;
+          }
+        }
+        memo[id] = [id, ...best];
+        return memo[id];
+      };
+      let longest = [];
+      for (const t of incomplete) {
+        const blockedByIncomplete = (t.blockedBy || []).some(dep => taskMap[dep] && taskMap[dep].status !== 'completed');
+        if (!blockedByIncomplete) {
+          const path = longestFrom(t.id);
+          if (path.length > longest.length) longest = path;
+        }
+      }
+      return longest;
+    });
+
     // Task selection
     const selectTask = async (task) => {
       selectedTask.value = task;
@@ -410,14 +645,21 @@ createApp({
       await loadCommits(task.id);
     };
 
+    const jumpToTask = (id) => {
+      const t = tasks.value.find(t => String(t.id) === String(id));
+      if (t) selectTask(t);
+    };
+
     // Mermaid graph
     const renderGraph = async () => {
       if (!mermaidContainer.value || tasks.value.length === 0) return;
+      const cp = new Set(criticalPath.value.map(String));
       let graph = 'graph LR\n';
       for (const t of tasks.value) {
-        const shape = t.status === 'completed' ? `["\u2713 ${t.subject}"]`
-                    : t.status === 'in_progress' ? `(["${t.subject}"])`
-                    : `["${t.subject}"]`;
+        const label = t.subject.replace(/"/g, "'");
+        const shape = t.status === 'completed' ? `["\u2713 ${label}"]`
+                    : t.status === 'in_progress' ? `(["${label}"])`
+                    : `["${label}"]`;
         graph += `  T${t.id}${shape}\n`;
         const statusStyle = t.status === 'completed' ? 'fill:#166534,stroke:#22c55e,color:#fff'
                           : t.status === 'in_progress' ? 'fill:#1e40af,stroke:#3b82f6,color:#fff'
@@ -426,7 +668,10 @@ createApp({
         graph += `  style T${t.id} ${statusStyle}\n`;
         if (t.blockedBy) {
           for (const dep of t.blockedBy) {
-            graph += `  T${dep} --> T${t.id}\n`;
+            const isCritical = cp.has(String(t.id)) && cp.has(String(dep));
+            graph += isCritical
+              ? `  T${dep} ==>|critical| T${t.id}\n`
+              : `  T${dep} --> T${t.id}\n`;
           }
         }
       }
@@ -457,6 +702,7 @@ createApp({
           await loadTasks();
           await loadProgress();
           await loadLogs();
+          await loadAutopilotStatus();
           if (activeTab.value === 'graph') await renderGraph();
         }
       };
@@ -466,8 +712,12 @@ createApp({
     watch(activeTab, async (tab) => {
       if (tab === 'progress') await loadProgress();
       if (tab === 'logs') await loadLogs();
-      if (tab === 'config') await loadClaudeMd();
+      if (tab === 'control') { await loadLogs(); await loadClaudeMd(); await loadAutopilotStatus(); }
       if (tab === 'graph') { await nextTick(); await renderGraph(); }
+    });
+
+    watch(configEditing, (editing) => {
+      if (editing) claudeMdDraft.value = claudeMd.value;
     });
 
     // Init
@@ -475,6 +725,7 @@ createApp({
       mermaid.initialize({ startOnLoad: false, theme: 'dark', themeVariables: { darkMode: true } });
       await loadSessions();
       await loadProgress();
+      await loadAutopilotStatus();
       connectWs();
     });
 
@@ -484,12 +735,14 @@ createApp({
     });
 
     return {
-      sessions, selectedSession, tasks, selectedTask, progress, claudeMd,
-      logs, selectedLog, logContent, taskCommits, wsConnected,
-      activeTab, activeDetailTab, mermaidContainer,
-      tabs, detailTabs, columns,
-      loadTasks, loadLog, tasksByStatus, renderedProgress, renderedClaudeMd,
-      isTaskCompleted, getTaskSubject, statusClass, selectTask,
+      sessions, selectedSession, tasks, selectedTask, progress, claudeMd, claudeMdDraft,
+      configEditing, logs, selectedLog, logContent, taskCommits, expandedDiff, diffContent,
+      testCommand, testRunning, testOutputText, testOutput, wsConnected,
+      activeTab, activeDetailTab, mermaidContainer, autopilotStatus, autopilotGoal,
+      tabs, detailTabs, columns, criticalPath,
+      loadTasks, loadLog, loadDiff, saveClaudeMd, startAutopilot, stopAutopilot, runTest,
+      tasksByStatus, renderedProgress, renderedClaudeMd,
+      isTaskCompleted, getTaskSubject, statusClass, selectTask, jumpToTask,
     };
   }
 }).mount('#app');
