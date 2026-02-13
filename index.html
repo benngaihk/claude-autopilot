@@ -20,47 +20,91 @@
   <link rel="stylesheet" href="https://unpkg.com/ant-design-vue@4.2.6/dist/reset.css">
   <style>
     [v-cloak] { display: none; }
-    body { margin: 0; padding: 0; }
-    /* Kanban columns */
-    .kanban-wrap { display: flex; gap: 12px; padding: 16px; overflow-x: auto; flex: 1; min-height: 0; }
-    .kanban-col { flex: 1; min-width: 220px; max-width: 320px; display: flex; flex-direction: column; }
+    html, body { margin: 0; padding: 0; background: #0a0a0a; color: #e8e8e8; min-height: 100vh; }
+
+    /* ── Kanban Board ─────────────────────────────────────── */
+    .kanban-wrap { display: flex; gap: 14px; padding: 18px; overflow-x: auto; flex: 1; min-height: 0; }
+    .kanban-col { flex: 1; min-width: 240px; max-width: 340px; display: flex; flex-direction: column; }
     .kanban-col-body { flex: 1; overflow-y: auto; padding: 8px; }
-    .task-card { cursor: pointer; transition: all 0.2s ease; margin-bottom: 8px; }
-    .task-card:hover { transform: translateY(-2px); }
-    /* Live log */
+    .task-card { cursor: pointer; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); margin-bottom: 8px; }
+    .task-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(22, 119, 255, 0.12); }
+
+    /* ── Live Log ─────────────────────────────────────────── */
     .live-log-pre {
       font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
       font-size: 12px;
+      line-height: 1.7;
       white-space: pre-wrap;
       word-break: break-all;
-      padding: 12px;
+      padding: 16px;
       margin: 0;
       max-height: 30vh;
       overflow: auto;
       color: #52c41a;
-      background: #000;
+      background: #0a0a0a;
+      border-radius: 0 0 8px 8px;
     }
-    /* Pulse animation */
+
+    /* ── Animations ───────────────────────────────────────── */
     .pulse-dot { animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: #141414; }
-    ::-webkit-scrollbar-thumb { background: #434343; border-radius: 3px; }
-    /* Landing page centering */
-    .landing-center { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* ── Scrollbar ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+    /* ── Landing Page ─────────────────────────────────────── */
+    .landing-center {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at 50% 0%, rgba(22, 119, 255, 0.08) 0%, transparent 60%),
+                  radial-gradient(ellipse at 80% 50%, rgba(114, 46, 209, 0.05) 0%, transparent 50%),
+                  #0a0a0a;
+    }
     .landing-form { width: 100%; max-width: 480px; padding: 0 24px; }
-    /* Gradient title */
+
+    /* ── Gradient Title ───────────────────────────────────── */
     .gradient-title {
-      background: linear-gradient(135deg, #1677ff 0%, #722ed1 100%);
+      background: linear-gradient(135deg, #4096ff 0%, #9254de 50%, #1677ff 100%);
+      background-size: 200% 200%;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
       font-size: 28px;
       font-weight: 700;
+      animation: shimmer 6s ease-in-out infinite;
     }
-    /* Full height layout */
-    .full-height { height: 100vh; display: flex; flex-direction: column; }
+    @keyframes shimmer {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+
+    /* ── Full Height Layout ───────────────────────────────── */
+    .full-height { height: 100vh; display: flex; flex-direction: column; background: #0a0a0a; }
+
+    /* ── Top Bar Glass Effect ─────────────────────────────── */
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      height: 56px;
+      line-height: 56px;
+      background: rgba(20, 20, 20, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    /* ── Output Panel ─────────────────────────────────────── */
+    .output-panel {
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(20, 20, 20, 0.5);
+    }
   </style>
 </head>
 <body>
@@ -121,7 +165,7 @@
   <div v-else class="full-height">
 
     <!-- Top Bar -->
-    <a-layout-header style="display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 56px; line-height: 56px;">
+    <div class="top-bar">
       <a-space :size="12" align="center">
         <span class="gradient-title" style="font-size: 18px;">Claude Autopilot</span>
         <!-- Status Badge -->
@@ -139,7 +183,7 @@
         <a-button v-if="autopilotRunning" danger size="small" @click="stopAutopilot">Stop</a-button>
         <a-button v-else size="small" @click="resetToLanding">New Goal</a-button>
       </a-space>
-    </a-layout-header>
+    </div>
 
     <!-- Completion Banner -->
     <a-alert v-if="view === 'done'" message="All tasks completed!" type="success" banner show-icon>
@@ -183,7 +227,7 @@
                 <a-space direction="vertical" :size="4" style="width: 100%;">
                   <div style="display: flex; justify-content: space-between; align-items: center;">
                     <a-typography-text type="secondary" code style="font-size: 11px;">{{ task.id }}</a-typography-text>
-                    <a-tag v-if="task.status === 'in_progress'" color="processing" :bordered="false" style="font-size: 11px; margin: 0;">Working...</a-tag>
+                    <a-tag v-if="task.status === 'in_progress'" color="processing" :bordered="false" style="font-size: 11px; margin: 0;">{{ task.activeForm || 'Working...' }}</a-tag>
                   </div>
                   <a-typography-text strong style="font-size: 13px; line-height: 1.4;">{{ task.subject }}</a-typography-text>
                 </a-space>
@@ -197,7 +241,7 @@
       </div>
 
       <!-- Live Output Panel -->
-      <div style="border-top: 1px solid #303030;">
+      <div class="output-panel">
         <a-collapse v-model:activeKey="outputActiveKey" :bordered="false" style="background: transparent;">
           <a-collapse-panel key="output" style="border: none;">
             <template #header>
@@ -221,7 +265,33 @@
           <a-descriptions-item label="Status">
             <a-tag :color="statusColor(selectedTask.status)">{{ selectedTask.status }}</a-tag>
           </a-descriptions-item>
+          <a-descriptions-item v-if="selectedTask.activeForm" label="Active">
+            <a-tag color="processing">{{ selectedTask.activeForm }}</a-tag>
+          </a-descriptions-item>
         </a-descriptions>
+
+        <!-- Description -->
+        <div v-if="selectedTask.description" style="margin-bottom: 16px;">
+          <a-typography-title :level="5" style="margin-bottom: 8px;">Description</a-typography-title>
+          <a-typography-paragraph style="white-space: pre-wrap; font-size: 13px;">{{ selectedTask.description }}</a-typography-paragraph>
+        </div>
+
+        <!-- Dependencies -->
+        <div v-if="selectedTask.blockedBy?.length || selectedTask.blocks?.length" style="margin-bottom: 16px;">
+          <a-typography-title :level="5" style="margin-bottom: 8px;">Dependencies</a-typography-title>
+          <div v-if="selectedTask.blockedBy?.length" style="margin-bottom: 8px;">
+            <a-typography-text type="secondary" style="font-size: 12px;">Blocked by: </a-typography-text>
+            <a-tag v-for="dep in selectedTask.blockedBy" :key="dep" style="margin: 2px;">
+              #{{ dep }}
+            </a-tag>
+          </div>
+          <div v-if="selectedTask.blocks?.length">
+            <a-typography-text type="secondary" style="font-size: 12px;">Blocks: </a-typography-text>
+            <a-tag v-for="b in selectedTask.blocks" :key="b" color="purple" style="margin: 2px;">
+              #{{ b }}
+            </a-tag>
+          </div>
+        </div>
 
         <!-- Commits for this task -->
         <a-typography-title :level="5" style="margin-bottom: 12px;">Commits</a-typography-title>
@@ -273,8 +343,15 @@ const app = createApp({
     const themeConfig = ref({
       algorithm: antd.theme.darkAlgorithm,
       token: {
-        colorPrimary: '#1677ff',
+        colorPrimary: '#4096ff',
         borderRadius: 8,
+        colorBgContainer: '#141414',
+        colorBgElevated: '#1a1a1a',
+        colorBgLayout: '#0a0a0a',
+        colorBorder: '#262626',
+        colorBorderSecondary: '#1f1f1f',
+        colorText: '#e8e8e8',
+        colorTextSecondary: '#8c8c8c',
       },
     });
 
@@ -404,7 +481,7 @@ const app = createApp({
           await loadAutopilotStatus();
           checkCompletion();
         }
-      }, 3000);
+      }, 2000);
     };
 
     // ── WebSocket for live log streaming ──────────────────────────────
