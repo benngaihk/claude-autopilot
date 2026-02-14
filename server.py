@@ -1767,7 +1767,7 @@ async def api_self_test():
 
 # ── V2 Pydantic Models ───────────────────────────────────────────────────────
 class V2CreateTaskRequest(BaseModel):
-    project_id: str
+    project_id: str | None = None
     title: str
     description: str = ""
 
@@ -1800,6 +1800,21 @@ def _db_get_project(project_id: str) -> dict | None:
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     conn.close()
     return _row_to_dict(row) if row else None
+
+
+def _get_workspace_root() -> str:
+    """Get the first scan_path as workspace root directory."""
+    conn = get_db()
+    row = conn.execute("SELECT value FROM settings WHERE key = 'scan_paths'").fetchone()
+    conn.close()
+    if row:
+        try:
+            paths = json.loads(row["value"])
+            if paths and isinstance(paths, list):
+                return paths[0]
+        except (json.JSONDecodeError, IndexError):
+            pass
+    return str(PROJECT_DIR.parent)
 
 
 _TASK_COLUMNS = frozenset({
@@ -1998,13 +2013,18 @@ async def _run_v2_planning(task_id: str):
     task = _db_get_task(task_id)
     if not task:
         return
-    project = _db_get_project(task["project_id"])
-    if not project:
-        _db_update_task(task_id, status="failed", error_message="Project not found")
-        await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
-        return
 
-    project_path = project["path"]
+    # Resolve working directory: specific project or workspace root
+    if task["project_id"]:
+        project = _db_get_project(task["project_id"])
+        if not project:
+            _db_update_task(task_id, status="failed", error_message="Project not found")
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
+            return
+        project_path = project["path"]
+    else:
+        project_path = _get_workspace_root()
+
     await broadcast({"type": "task_planning", "task_id": task_id})
 
     planning_prompt = f"""You are a technical project planner. Analyze the codebase at {project_path} for the following task.
@@ -2115,14 +2135,19 @@ async def _run_v2_execution(task_id: str):
         task = _db_get_task(task_id)
         if not task:
             return
-        project = _db_get_project(task["project_id"])
-        if not project:
-            _db_update_task(task_id, status="failed", error_message="Project not found")
-            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
-            return
 
-        project_path = project["path"]
-        main_branch = project["main_branch"] or "main"
+        # Resolve working directory: specific project or workspace root
+        if task["project_id"]:
+            project = _db_get_project(task["project_id"])
+            if not project:
+                _db_update_task(task_id, status="failed", error_message="Project not found")
+                await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
+                return
+            project_path = project["path"]
+            main_branch = project["main_branch"] or "main"
+        else:
+            project_path = _get_workspace_root()
+            main_branch = "main"
 
         await broadcast({"type": "task_executing", "task_id": task_id})
 
@@ -2319,10 +2344,11 @@ async def api_v2_projects_scan():
 @app.post("/api/v2/tasks")
 async def api_v2_task_create(req: V2CreateTaskRequest):
     """Create a new v2 task and immediately launch background planning."""
-    # Validate project exists
-    project = _db_get_project(req.project_id)
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    # Validate project exists if specified
+    if req.project_id:
+        project = _db_get_project(req.project_id)
+        if not project:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
 
     task_id = "t-" + secrets.token_hex(4)
     conn = get_db()

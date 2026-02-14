@@ -547,3 +547,20 @@ def test_v2_task_lifecycle(client):
     # Verify deletion
     r = client.get(f"/api/v2/tasks/{task_id}")
     assert r.status_code == 404
+
+
+def test_v2_task_workspace_level(client):
+    """Test creating a task without project_id (workspace-level)."""
+    r = client.post("/api/v2/tasks", json={
+        "title": "Workspace-level test task",
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert "id" in data
+    task_id = data["id"]
+    assert data["project_id"] is None
+    assert data["title"] == "Workspace-level test task"
+
+    # Clean up
+    r = client.delete(f"/api/v2/tasks/{task_id}")
+    assert r.status_code == 200

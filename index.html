@@ -292,9 +292,10 @@
           />
           <a-select
             v-model:value="newTaskProjectId"
-            placeholder="Project"
+            placeholder="Workspace (all projects)"
             size="large"
-            style="min-width: 180px;"
+            style="min-width: 200px;"
+            allow-clear
           >
             <a-select-option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
           </a-select>
@@ -302,7 +303,7 @@
             type="primary"
             size="large"
             @click="createTask"
-            :disabled="!newTaskTitle.trim() || !newTaskProjectId"
+            :disabled="!newTaskTitle.trim()"
             :loading="creating"
           >Create</a-button>
         </div>
@@ -828,8 +829,9 @@ const app = createApp({
     }[status] || status);
 
     const projectName = (projectId) => {
+      if (!projectId) return 'Workspace';
       const p = projects.value.find(x => x.id === projectId);
-      return p ? p.name : projectId || 'Unknown';
+      return p ? p.name : projectId;
     };
 
     const diffLineClass = (line) => {
@@ -906,16 +908,15 @@ const app = createApp({
 
     // ── Task Actions ────────────────────────────────────────────────
     const createTask = async () => {
-      if (!newTaskTitle.value.trim() || !newTaskProjectId.value) return;
+      if (!newTaskTitle.value.trim()) return;
       creating.value = true;
       try {
+        const body = { title: newTaskTitle.value.trim() };
+        if (newTaskProjectId.value) body.project_id = newTaskProjectId.value;
         const res = await api('/api/v2/tasks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            project_id: newTaskProjectId.value,
-            title: newTaskTitle.value.trim(),
-          }),
+          body: JSON.stringify(body),
         });
         if (res && res.id) {
           newTaskTitle.value = '';
