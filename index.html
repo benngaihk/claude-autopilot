@@ -417,7 +417,7 @@
           <a-typography-paragraph type="secondary">{{ planDrawerTask.description }}</a-typography-paragraph>
         </div>
 
-        <template v-if="parsedPlan">
+        <div v-if="parsedPlan">
           <!-- Plan Summary -->
           <div v-if="parsedPlan.summary" style="margin-bottom: 20px;">
             <a-typography-title :level="5" style="margin-bottom: 8px;">Summary</a-typography-title>
@@ -471,8 +471,7 @@
               style="margin-bottom: 8px;"
             />
           </div>
-        </template>
-
+        </div>
         <div v-else style="text-align: center; padding: 40px;">
           <a-typography-text type="secondary">No plan data available.</a-typography-text>
         </div>
@@ -508,8 +507,7 @@
             <a-typography-text type="secondary">Loading diff...</a-typography-text>
           </div>
         </div>
-
-        <template v-else>
+        <div v-else>
           <!-- Stat bar -->
           <div v-if="diffData.diff_stat" class="diff-stat-bar">
             <span>
@@ -532,11 +530,9 @@
 
           <!-- Diff content -->
           <div v-if="diffData.diff_content" class="diff-container">
-            <template v-if="diffTruncated">
-              <div style="padding: 8px 12px; color: #fa8c16; font-size: 12px; border-bottom: 1px solid #262626;">
-                Diff truncated. {{ diffTotalLines }} lines total.
-              </div>
-            </template>
+            <div v-if="diffTruncated" style="padding: 8px 12px; color: #fa8c16; font-size: 12px; border-bottom: 1px solid #262626;">
+              Diff truncated. {{ diffTotalLines }} lines total.
+            </div>
             <div v-for="(line, i) in diffLines" :key="i"
                  :class="diffLineClass(line)"
                  class="diff-line">{{ line }}</div>
@@ -545,7 +541,7 @@
           <div v-if="!diffData.diff_content && !diffData.diff_stat" style="text-align: center; padding: 40px;">
             <a-typography-text type="secondary">No diff data available.</a-typography-text>
           </div>
-        </template>
+        </div>
       </template>
 
       <template #footer>
