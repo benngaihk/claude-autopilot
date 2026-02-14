@@ -540,7 +540,7 @@
 </div>
 
 <script>
-const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
+const { createApp, ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
 
 // dayjs plugins
 dayjs.extend(dayjs_plugin_customParseFormat);
@@ -563,7 +563,7 @@ const app = createApp({
     const creating = ref(false);
 
     // Task activities (live indicators)
-    const taskActivities = ref({});
+    const taskActivities = reactive({});
 
     // Plan Drawer
     const planDrawerVisible = ref(false);
@@ -1038,10 +1038,14 @@ const app = createApp({
 
       ws.onopen = () => {
         console.log('WebSocket connected');
+        // Stop polling — WS handles updates now
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       };
 
       ws.onclose = () => {
         console.log('WebSocket disconnected, retrying in 3s...');
+        // Restart polling as fallback
+        if (!pollTimer) startPolling();
         wsRetryTimer = setTimeout(connectWs, 3000);
       };
 
@@ -1095,20 +1099,16 @@ const app = createApp({
         }
 
         case 'task_activity': {
-          // Store latest activity for the task
+          // Store latest activity for the task (reactive object, no spread)
           if (msg.task_id && msg.summary) {
-            taskActivities.value = {
-              ...taskActivities.value,
-              [msg.task_id]: (msg.tool ? '[' + msg.tool + '] ' : '') + msg.summary
-            };
+            taskActivities[msg.task_id] = (msg.tool ? '[' + msg.tool + '] ' : '') + msg.summary;
           }
           break;
         }
 
         case 'task_done': {
           updateTaskStatus(msg.task_id, 'done');
-          // Clear activity
-          delete taskActivities.value[msg.task_id];
+          delete taskActivities[msg.task_id];
           antd.message.success('Task completed: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
           break;
         }
@@ -1118,8 +1118,7 @@ const app = createApp({
           if (idx >= 0) {
             tasks.value[idx] = { ...tasks.value[idx], status: 'failed', error: msg.error };
           }
-          // Clear activity
-          delete taskActivities.value[msg.task_id];
+          delete taskActivities[msg.task_id];
           antd.message.error('Task failed: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
           break;
         }
