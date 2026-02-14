@@ -2027,34 +2027,33 @@ async def _run_v2_planning(task_id: str):
 
     await broadcast({"type": "task_planning", "task_id": task_id})
 
-    planning_prompt = f"""You are a technical project planner. Analyze the codebase at {project_path} for the following task.
+    planning_prompt = f"""You are a quick task planner. Create a brief execution plan for the following task.
 
-TASK TITLE: {task['title']}
-TASK DESCRIPTION: {task['description'] or 'No additional description.'}
+WORKSPACE: {project_path}
+TASK: {task['title']}
+{('DESCRIPTION: ' + task['description']) if task['description'] else ''}
 
-Your job is to explore the codebase (READ ONLY — do NOT modify any files) and produce a detailed implementation plan.
+IMPORTANT: Be FAST. Do NOT deeply explore or read file contents. Only do a quick `ls` or `find` at most to understand the project structure. Then immediately output your plan.
 
-OUTPUT FORMAT: Return ONLY a JSON object wrapped in ```json``` markers with this structure:
+OUTPUT FORMAT: Return ONLY a JSON object wrapped in ```json``` markers:
 ```json
 {{
-  "summary": "one line summary of what needs to be done",
+  "summary": "one-line summary of what this task involves",
   "files_to_modify": [
-    {{"path": "relative/path/to/file.py", "action": "modify", "description": "what changes are needed"}},
-    {{"path": "relative/path/to/new_file.py", "action": "create", "description": "what this file will contain"}}
+    {{"path": "path/to/file", "action": "modify|create|delete", "description": "brief reason"}}
   ],
-  "approach": "detailed implementation plan in markdown...",
-  "risks": ["risk1", "risk2"]
+  "approach": "2-5 bullet points in markdown describing the high-level steps",
+  "risks": ["potential risk or edge case"]
 }}
 ```
 
 RULES:
-- Explore the codebase structure first
-- List ALL files that need to be modified or created
-- action must be one of: "modify", "create", "delete"
-- Write a clear, step-by-step approach
-- Identify potential risks or edge cases
-- Do NOT write any code, only plan
-- Do NOT modify any files
+- Spend minimal time exploring — a quick directory listing is enough
+- Keep the approach SHORT: 2-5 bullet points, not paragraphs
+- files_to_modify can be approximate — it's a rough plan, not a spec
+- Do NOT read file contents in detail, do NOT write code
+- Do NOT actually perform the task — only outline HOW to do it
+- Output the JSON immediately after a quick look
 
 Return the JSON plan now:"""
 
@@ -2063,7 +2062,7 @@ Return the JSON plan now:"""
         env.pop("CLAUDECODE", None)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", planning_prompt,
-            "--max-turns", "15",
+            "--max-turns", "5",
             "--output-format", "text",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
