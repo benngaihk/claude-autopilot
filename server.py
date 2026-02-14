@@ -1802,13 +1802,24 @@ def _db_get_project(project_id: str) -> dict | None:
     return _row_to_dict(row) if row else None
 
 
+_TASK_COLUMNS = frozenset({
+    "title", "description", "status", "plan", "plan_raw", "execution_result",
+    "worktree_path", "branch_name", "diff_stat", "diff_content", "error_message",
+    "claude_pid", "created_at", "updated_at", "planned_at", "approved_at",
+    "executed_at", "merged_at",
+})
+
+
 def _db_update_task(task_id: str, **kwargs):
-    """Update arbitrary columns on a task row."""
+    """Update arbitrary columns on a task row (column-name whitelist enforced)."""
     if not kwargs:
         return
     kwargs["updated_at"] = datetime.utcnow().isoformat()
-    set_clause = ", ".join(f"{k} = ?" for k in kwargs)
-    values = list(kwargs.values()) + [task_id]
+    safe = {k: v for k, v in kwargs.items() if k in _TASK_COLUMNS}
+    if not safe:
+        return
+    set_clause = ", ".join(f"{k} = ?" for k in safe)
+    values = list(safe.values()) + [task_id]
     conn = get_db()
     conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
     conn.commit()
@@ -2281,18 +2292,20 @@ async def api_v2_projects_scan():
     projects = scan_for_projects(scan_paths)
 
     conn = get_db()
-    for p in projects:
-        pid = "p-" + secrets.token_hex(4)
-        conn.execute(
-            "INSERT INTO projects (id, name, path, main_branch) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(path) DO UPDATE SET name = excluded.name, main_branch = excluded.main_branch",
-            (pid, p["name"], p["path"], p["main_branch"]),
-        )
-    conn.commit()
-    # Return updated list
-    rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
-    conn.close()
-    return {"ok": True, "projects": [_row_to_dict(r) for r in rows]}
+    try:
+        for p in projects:
+            pid = "p-" + secrets.token_hex(4)
+            conn.execute(
+                "INSERT INTO projects (id, name, path, main_branch) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET name = excluded.name, main_branch = excluded.main_branch",
+                (pid, p["name"], p["path"], p["main_branch"]),
+            )
+        conn.commit()
+        # Return updated list
+        rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+        return {"ok": True, "projects": [_row_to_dict(r) for r in rows]}
+    finally:
+        conn.close()
 
 
 # ── V2 Task API ─────────────────────────────────────────────────────────────
@@ -2378,6 +2391,7 @@ async def api_v2_task_delete(task_id: str):
     if task["claude_pid"] and _is_pid_alive(task["claude_pid"]):
         try:
             os.kill(task["claude_pid"], signal.SIGTERM)
+            await asyncio.sleep(1)  # wait for graceful shutdown before worktree cleanup
         except (OSError, ProcessLookupError):
             pass
 
@@ -2465,6 +2479,7 @@ async def api_v2_task_cancel(task_id: str):
     if task["claude_pid"] and _is_pid_alive(task["claude_pid"]):
         try:
             os.kill(task["claude_pid"], signal.SIGTERM)
+            await asyncio.sleep(1)  # wait for graceful shutdown before worktree cleanup
         except (OSError, ProcessLookupError):
             pass
 
