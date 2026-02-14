@@ -340,30 +340,24 @@
               <!-- Executing: Cancel -->
               <a-button v-if="task.status === 'executing'" size="small" @click.stop="cancelTask(task.id)">Cancel</a-button>
 
-              <!-- Done: View Diff, Merge, Delete -->
+              <!-- Done: View Diff, Merge (only if has branch), Delete -->
               <template v-if="task.status === 'done'">
-                <a-button size="small" @click.stop="openDiffDrawer(task)">View Diff</a-button>
-                <a-button size="small" type="primary" @click.stop="mergeTask(task.id)">Merge</a-button>
-                <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
-                  <template #icon><DeleteOutlined></DeleteOutlined></template>
-                </a-button>
+                <a-button v-if="task.branch_name" size="small" @click.stop="openDiffDrawer(task)">View Diff</a-button>
+                <a-button v-if="task.branch_name" size="small" type="primary" @click.stop="mergeTask(task.id)">Merge</a-button>
+                <a-button size="small" @click.stop="confirmDeleteTask(task)">Delete</a-button>
               </template>
 
               <!-- Failed: View Error, Retry, Delete -->
               <template v-if="task.status === 'failed'">
                 <a-button size="small" @click.stop="openErrorModal(task)">View Error</a-button>
                 <a-button size="small" type="primary" @click.stop="replanTask(task.id)">Retry</a-button>
-                <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
-                  <template #icon><DeleteOutlined></DeleteOutlined></template>
-                </a-button>
+                <a-button size="small" @click.stop="confirmDeleteTask(task)">Delete</a-button>
               </template>
 
               <!-- Rejected: Replan, Delete -->
               <template v-if="task.status === 'rejected'">
                 <a-button size="small" type="primary" @click.stop="replanTask(task.id)">Replan</a-button>
-                <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
-                  <template #icon><DeleteOutlined></DeleteOutlined></template>
-                </a-button>
+                <a-button size="small" @click.stop="confirmDeleteTask(task)">Delete</a-button>
               </template>
             </div>
           </div>
@@ -469,7 +463,7 @@
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
           <a-button @click="diffDrawerVisible = false">Close</a-button>
-          <a-button type="primary" @click="diffDrawerVisible = false; mergeTask(diffDrawerTask?.id)">Merge to main</a-button>
+          <a-button v-if="diffDrawerTask?.branch_name" type="primary" @click="diffDrawerVisible = false; mergeTask(diffDrawerTask?.id)">Merge to main</a-button>
         </div>
       </template>
     </a-drawer>
