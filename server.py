@@ -1824,10 +1824,11 @@ def _get_workspace_root() -> str:
 
 
 _TASK_COLUMNS = frozenset({
-    "title", "description", "status", "plan", "plan_raw", "plan_choices",
-    "execution_result", "worktree_path", "branch_name", "diff_stat",
-    "diff_content", "error_message", "claude_pid", "created_at", "updated_at",
-    "planned_at", "approved_at", "executed_at", "merged_at",
+    "project_id", "title", "description", "status", "plan", "plan_raw",
+    "plan_choices", "execution_result", "worktree_path", "branch_name",
+    "diff_stat", "diff_content", "error_message", "claude_pid",
+    "created_at", "updated_at", "planned_at", "approved_at",
+    "executed_at", "merged_at",
 })
 
 
@@ -1985,6 +1986,53 @@ async def _get_diff(project_path: str, task_id: str, main_branch: str) -> tuple[
     return stat, diff_text
 
 
+async def _get_working_diff(work_dir: str) -> tuple[dict, str]:
+    """Get uncommitted changes (staged + unstaged) in a directory. Returns (stat_dict, diff_text)."""
+    # Check if this is a git repo
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "--is-inside-work-tree",
+        cwd=work_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return {"files_changed": 0, "total_insertions": 0, "total_deletions": 0}, ""
+
+    # numstat for both staged and unstaged
+    proc = await asyncio.create_subprocess_exec(
+        "git", "diff", "--numstat", "HEAD",
+        cwd=work_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    numstat = stdout.decode()
+    files_changed = 0
+    total_ins = 0
+    total_del = 0
+    for line in numstat.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            files_changed += 1
+            try:
+                total_ins += int(parts[0])
+                total_del += int(parts[1])
+            except ValueError:
+                pass
+    stat = {"files_changed": files_changed, "total_insertions": total_ins, "total_deletions": total_del}
+
+    # Full diff (staged + unstaged vs HEAD)
+    proc2 = await asyncio.create_subprocess_exec(
+        "git", "diff", "HEAD",
+        cwd=work_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout2, _ = await proc2.communicate()
+    diff_text = stdout2.decode(errors="replace")
+
+    max_diff_size = 500 * 1024
+    if len(diff_text) > max_diff_size:
+        diff_text = diff_text[:max_diff_size] + "\n\n... [diff truncated, exceeded 500KB] ..."
+
+    return stat, diff_text
+
+
 async def _merge_branch(project_path: str, task_id: str, main_branch: str, title: str) -> tuple[bool, str]:
     """Merge task branch to main. Returns (success, message)."""
     branch_name = f"task/{task_id}"
@@ -2010,6 +2058,31 @@ async def _merge_branch(project_path: str, task_id: str, main_branch: str, title
         )
         return False, stderr.decode(errors="replace")
     return True, stdout.decode(errors="replace")
+
+
+# ── V2 Auto-detect Project from Plan ──────────────────────────────────────
+
+def _detect_project_from_plan(plan_text: str) -> str | None:
+    """Match plan text against known projects. Return project_id if exactly one matches."""
+    conn = get_db()
+    projects = [dict(r) for r in conn.execute("SELECT id, name, path FROM projects").fetchall()]
+    conn.close()
+    if not projects:
+        return None
+
+    plan_lower = plan_text.lower()
+    matched = []
+    for p in projects:
+        # Match by project name or last path component
+        name_lower = p["name"].lower()
+        dir_name = os.path.basename(p["path"]).lower()
+        if name_lower in plan_lower or dir_name in plan_lower:
+            matched.append(p["id"])
+
+    # Only auto-assign if exactly one project matched
+    if len(matched) == 1:
+        return matched[0]
+    return None
 
 
 # ── V2 Plan Review (fast model) ────────────────────────────────────────────
@@ -2175,6 +2248,12 @@ Be concise. Do NOT write code. Do NOT read every file."""
             await broadcast({"type": "task_failed", "task_id": task_id, "error": err_msg})
             return
 
+        # Auto-detect project from plan if task is workspace-level
+        if not task["project_id"]:
+            detected_pid = _detect_project_from_plan(output)
+            if detected_pid:
+                _db_update_task(task_id, project_id=detected_pid)
+
         # Quick review scan: use a fast model to extract choices needing user input
         choices_json = await _extract_plan_choices(output)
 
@@ -2219,53 +2298,30 @@ async def _run_v2_execution(task_id: str):
                 await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
                 return
             project_path = project["path"]
-            main_branch = project["main_branch"] or "main"
         else:
             project_path = _get_workspace_root()
-            main_branch = "main"
 
         await broadcast({"type": "task_executing", "task_id": task_id})
 
-        use_worktree = bool(task["project_id"])  # Only use worktree for project-scoped tasks
-
         try:
-            # Create worktree only for project-scoped tasks
-            if use_worktree:
-                work_dir = await _create_worktree(project_path, task_id)
-                branch_name = f"task/{task_id}"
-                _db_update_task(task_id, worktree_path=work_dir, branch_name=branch_name)
-            else:
-                work_dir = project_path  # workspace root
+            work_dir = project_path
 
-            # Parse plan for context
-            plan_text = ""
-            if task["plan"]:
-                try:
-                    plan_data = json.loads(task["plan"])
-                    plan_text = f"""
-PLAN SUMMARY: {plan_data.get('summary', '')}
+            # Build plan context
+            plan_text = task["plan"] or ""
 
-APPROACH:
-{plan_data.get('approach', '')}
-
-FILES TO MODIFY:
-{json.dumps(plan_data.get('files_to_modify', []), indent=2)}
-"""
-                except json.JSONDecodeError:
-                    plan_text = task["plan"]
-
-            execution_prompt = f"""You are a software engineer. Implement the following task in the workspace at {work_dir}.
+            execution_prompt = f"""You are a software engineer. Implement the following task.
 
 TASK: {task['title']}
 DESCRIPTION: {task['description'] or 'No additional description.'}
 
+PLAN:
 {plan_text}
 
 RULES:
 - Implement the task according to the plan
 - Write clean, production-quality code
 - Follow existing code patterns and conventions
-- Commit your changes with a descriptive message
+- Do NOT commit — leave changes uncommitted so the user can review and commit selectively
 - Do NOT modify unrelated files
 
 Begin implementation:"""
@@ -2316,12 +2372,8 @@ Begin implementation:"""
 
             _db_update_task(task_id, claude_pid=None)
 
-            # Generate diff (only for project-scoped tasks with worktree)
-            if use_worktree:
-                stat, diff_text = await _get_diff(project_path, task_id, main_branch)
-            else:
-                stat = {"files_changed": 0, "total_insertions": 0, "total_deletions": 0}
-                diff_text = ""
+            # Generate diff: show uncommitted changes in the project directory
+            stat, diff_text = await _get_working_diff(work_dir)
 
             _db_update_task(
                 task_id,
@@ -2653,42 +2705,65 @@ async def api_v2_task_diff(task_id: str):
 
 @app.post("/api/v2/tasks/{task_id}/merge")
 async def api_v2_task_merge(task_id: str):
-    """Merge task branch to main, clean up worktree."""
+    """Commit uncommitted changes for the task."""
     task = _db_get_task(task_id)
     if not task:
         return JSONResponse(status_code=404, content={"error": "Task not found"})
     if task["status"] != "done":
         return JSONResponse(
             status_code=400,
-            content={"error": f"Cannot merge task in status '{task['status']}'. Must be 'done'."},
+            content={"error": f"Cannot commit task in status '{task['status']}'. Must be 'done'."},
         )
 
-    project = _db_get_project(task["project_id"])
-    if not project:
-        return JSONResponse(status_code=404, content={"error": "Project not found"})
+    # Resolve project path
+    if task["project_id"]:
+        project = _db_get_project(task["project_id"])
+        if not project:
+            return JSONResponse(status_code=404, content={"error": "Project not found"})
+        work_dir = project["path"]
+    else:
+        work_dir = _get_workspace_root()
 
-    main_branch = project["main_branch"] or "main"
-
-    success, message = await _merge_branch(
-        project["path"], task_id, main_branch, task["title"]
+    # Check if work_dir is a git repo
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "--is-inside-work-tree",
+        cwd=work_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-
-    if not success:
+    await proc.communicate()
+    if proc.returncode != 0:
         return JSONResponse(
             status_code=400,
-            content={"ok": False, "error": f"Merge failed: {message}"},
+            content={"ok": False, "error": "Not a git repository, cannot commit"},
         )
 
-    # Clean up worktree
-    try:
-        await _remove_worktree(project["path"], task_id)
-    except Exception:
-        pass
+    # Stage all changes and commit
+    commit_msg = f"[{task_id}] {task['title']}"
+    proc = await asyncio.create_subprocess_exec(
+        "git", "add", "-A",
+        cwd=work_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await proc.communicate()
+
+    proc = await asyncio.create_subprocess_exec(
+        "git", "commit", "-m", commit_msg,
+        cwd=work_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    message = stdout.decode(errors="replace")
+
+    if proc.returncode != 0:
+        err = stderr.decode(errors="replace")
+        if "nothing to commit" in err or "nothing to commit" in message:
+            message = "Nothing to commit — changes may have already been committed."
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": f"Commit failed: {err}"},
+            )
 
     _db_update_task(
         task_id,
         merged_at=datetime.utcnow().isoformat(),
-        worktree_path=None,
     )
 
     await broadcast({"type": "task_merged", "task_id": task_id})

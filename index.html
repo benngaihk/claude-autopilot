@@ -340,10 +340,10 @@
               <!-- Executing: Cancel -->
               <a-button v-if="task.status === 'executing'" size="small" @click.stop="cancelTask(task.id)">Cancel</a-button>
 
-              <!-- Done: View Diff, Merge (only if has branch), Delete -->
+              <!-- Done: View Diff, Commit, Delete -->
               <template v-if="task.status === 'done'">
-                <a-button v-if="task.branch_name" size="small" @click.stop="openDiffDrawer(task)">View Diff</a-button>
-                <a-button v-if="task.branch_name" size="small" type="primary" @click.stop="mergeTask(task.id)">Merge</a-button>
+                <a-button v-if="task.project_id" size="small" @click.stop="openDiffDrawer(task)">View Diff</a-button>
+                <a-button v-if="task.project_id" size="small" type="primary" @click.stop="mergeTask(task.id)">Commit</a-button>
                 <a-button size="small" @click.stop="confirmDeleteTask(task)">Delete</a-button>
               </template>
 
@@ -496,7 +496,7 @@
       <template #footer>
         <div style="display: flex; justify-content: flex-end; gap: 8px;">
           <a-button @click="diffDrawerVisible = false">Close</a-button>
-          <a-button v-if="diffDrawerTask?.branch_name" type="primary" @click="diffDrawerVisible = false; mergeTask(diffDrawerTask?.id)">Merge to main</a-button>
+          <a-button type="primary" @click="diffDrawerVisible = false; mergeTask(diffDrawerTask?.id)">Commit Changes</a-button>
         </div>
       </template>
     </a-drawer>
@@ -979,13 +979,13 @@ const app = createApp({
       try {
         const res = await api(`/api/v2/tasks/${id}/merge`, { method: 'POST' });
         if (res?.ok) {
-          antd.message.success('Task merged to main');
+          antd.message.success('Changes committed');
           await loadTasks();
         } else {
-          antd.message.error(res?.error || 'Failed to merge task');
+          antd.message.error(res?.error || 'Failed to commit');
         }
       } catch (e) {
-        antd.message.error('Failed to merge task: ' + e.message);
+        antd.message.error('Failed to commit: ' + e.message);
       }
     };
 
@@ -1197,7 +1197,7 @@ const app = createApp({
 
         case 'task_merged': {
           updateTaskStatus(msg.task_id, 'merged');
-          antd.message.success('Task merged: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
+          antd.message.success('Changes committed: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
           await loadTasks();
           break;
         }
