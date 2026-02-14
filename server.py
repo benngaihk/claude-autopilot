@@ -2095,48 +2095,50 @@ async def _run_v2_planning(task_id: str, feedback: str | None = None):
     # Build prompt — include previous plan + feedback for revisions
     previous_plan = task.get("plan_raw") or task.get("plan") or ""
     if feedback and previous_plan:
-        planning_prompt = f"""You are a task planner. You previously created a plan, but the user has feedback.
+        planning_prompt = f"""You are a FAST task planner. Revise the plan based on user feedback.
 
 TASK: {task['title']}
 {('DESCRIPTION: ' + task['description']) if task['description'] else ''}
 
-YOUR PREVIOUS PLAN:
+PREVIOUS PLAN:
 {previous_plan}
 
-USER FEEDBACK:
-{feedback}
+USER FEEDBACK: {feedback}
 
-Revise the plan based on the user's feedback. If the user chose a specific approach, adopt it. If they want changes, incorporate them.
+RULES — be fast:
+- Do NOT re-explore the codebase, you already have the context
+- Just revise the plan text based on the feedback
+- Output the revised plan immediately
 
-Output a revised markdown plan with:
-1. **Summary** — one paragraph overview
-2. **Files involved** — list of files to modify/create/delete
-3. **Steps** — numbered implementation steps
-4. **Risks** — potential issues (optional)
-
-Keep it concise but informative. Do NOT write any code — only describe the plan."""
+Output a markdown plan: Summary, Files involved, Steps, Risks (optional)."""
     else:
-        planning_prompt = f"""You are a task planner. Explore the workspace and create an execution plan.
+        planning_prompt = f"""You are a FAST task planner. Quickly scan the project and create a brief plan.
 
 TASK: {task['title']}
 {('DESCRIPTION: ' + task['description']) if task['description'] else ''}
 
-You are in READ-ONLY mode. Explore the project structure, read key files, and then write a clear plan.
+RULES — be fast:
+- Do ONE quick `ls` or `find` to understand the project structure
+- Optionally read 1-2 key files (like README, package.json, main entry point)
+- Then IMMEDIATELY output your plan — do not explore further
+- Total exploration: 3-5 tool calls MAX, then write the plan
 
-Your output should be a markdown plan with:
-1. **Summary** — one paragraph overview of what needs to be done
-2. **Files involved** — list the files that will need to be modified/created/deleted
-3. **Steps** — numbered list of implementation steps
-4. **Risks** — any potential issues or edge cases (optional)
+Output a markdown plan with:
+1. **Summary** — one paragraph
+2. **Files involved** — list files to modify/create/delete
+3. **Steps** — numbered implementation steps (3-8 steps)
+4. **Risks** — potential issues (optional)
 
-Keep it concise but informative. Do NOT write any code — only describe the plan."""
+Be concise. Do NOT write code. Do NOT read every file."""
+
+    _PLANNING_TIMEOUT = 3 * 60  # 3 minutes max for planning
 
     try:
         env = {**os.environ}
         env.pop("CLAUDECODE", None)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", planning_prompt,
-            "--max-turns", "30",
+            "--max-turns", "15",
             "--output-format", "text",
             "--disallowedTools", "Edit", "Write", "NotebookEdit",
             stdout=asyncio.subprocess.PIPE,
@@ -2145,7 +2147,19 @@ Keep it concise but informative. Do NOT write any code — only describe the pla
             env=env,
         )
 
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_PLANNING_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            _db_update_task(task_id, status="failed", error_message="Planning timed out (3 min limit)")
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Planning timed out"})
+            return
         output = stdout.decode(errors="replace").strip()
 
         if proc.returncode != 0:
