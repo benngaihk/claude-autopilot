@@ -920,8 +920,10 @@ const app = createApp({
         });
         if (res && res.id) {
           newTaskTitle.value = '';
-          // Add immediately to list
-          tasks.value.unshift(res);
+          // Only add if not already present (WebSocket may have added it first)
+          if (!tasks.value.find(t => t.id === res.id)) {
+            tasks.value.unshift(res);
+          }
           antd.message.success('Task created');
         } else if (res?.error) {
           antd.message.error(res.error);
