@@ -2152,11 +2152,16 @@ async def _run_v2_execution(task_id: str):
 
         await broadcast({"type": "task_executing", "task_id": task_id})
 
+        use_worktree = bool(task["project_id"])  # Only use worktree for project-scoped tasks
+
         try:
-            # Create worktree
-            worktree_path = await _create_worktree(project_path, task_id)
-            branch_name = f"task/{task_id}"
-            _db_update_task(task_id, worktree_path=worktree_path, branch_name=branch_name)
+            # Create worktree only for project-scoped tasks
+            if use_worktree:
+                work_dir = await _create_worktree(project_path, task_id)
+                branch_name = f"task/{task_id}"
+                _db_update_task(task_id, worktree_path=work_dir, branch_name=branch_name)
+            else:
+                work_dir = project_path  # workspace root
 
             # Parse plan for context
             plan_text = ""
@@ -2175,7 +2180,7 @@ FILES TO MODIFY:
                 except json.JSONDecodeError:
                     plan_text = task["plan"]
 
-            execution_prompt = f"""You are a software engineer. Implement the following task in the workspace at {worktree_path}.
+            execution_prompt = f"""You are a software engineer. Implement the following task in the workspace at {work_dir}.
 
 TASK: {task['title']}
 DESCRIPTION: {task['description'] or 'No additional description.'}
@@ -2200,7 +2205,7 @@ Begin implementation:"""
                 "--dangerously-skip-permissions",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=worktree_path,
+                cwd=work_dir,
                 env=env,
             )
             _db_update_task(task_id, claude_pid=proc.pid)
@@ -2221,7 +2226,6 @@ Begin implementation:"""
                 await asyncio.wait_for(_stream_output(), timeout=_V2_EXECUTION_TIMEOUT)
                 await proc.wait()
             except asyncio.TimeoutError:
-                # Kill the process on timeout
                 try:
                     proc.kill()
                 except ProcessLookupError:
@@ -2238,8 +2242,12 @@ Begin implementation:"""
 
             _db_update_task(task_id, claude_pid=None)
 
-            # Generate diff
-            stat, diff_text = await _get_diff(project_path, task_id, main_branch)
+            # Generate diff (only for project-scoped tasks with worktree)
+            if use_worktree:
+                stat, diff_text = await _get_diff(project_path, task_id, main_branch)
+            else:
+                stat = {"files_changed": 0, "total_insertions": 0, "total_deletions": 0}
+                diff_text = ""
 
             _db_update_task(
                 task_id,
