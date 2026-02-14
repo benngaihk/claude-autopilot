@@ -889,8 +889,13 @@ const app = createApp({
       try {
         const data = await api('/api/v2/settings');
         if (data) {
+          let paths = '';
+          try {
+            const arr = JSON.parse(data.scan_paths || '[]');
+            paths = Array.isArray(arr) ? arr.join('\n') : data.scan_paths;
+          } catch { paths = data.scan_paths || ''; }
           settingsData.value = {
-            scan_paths: data.scan_paths || '',
+            scan_paths: paths,
             max_parallel_tasks: parseInt(data.max_parallel_tasks) || 3,
           };
         }
@@ -1072,7 +1077,7 @@ const app = createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             settings: {
-              scan_paths: settingsData.value.scan_paths,
+              scan_paths: JSON.stringify(settingsData.value.scan_paths.split('\n').map(s => s.trim()).filter(Boolean)),
               max_parallel_tasks: String(settingsData.value.max_parallel_tasks),
             }
           }),
