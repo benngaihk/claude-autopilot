@@ -1095,6 +1095,8 @@ const app = createApp({
     };
 
     const onProjectFilterChange = () => {
+      // Sync task creation project with filter selection
+      newTaskProjectId.value = selectedProjectId.value || '';
       loadTasks();
     };
 
