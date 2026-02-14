@@ -2063,7 +2063,7 @@ Return the JSON plan now:"""
         env.pop("CLAUDECODE", None)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", planning_prompt,
-            "--max-turns", "3",
+            "--max-turns", "15",
             "--output-format", "text",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -2100,13 +2100,14 @@ Return the JSON plan now:"""
                     pass
 
         if not plan_data:
+            err_detail = output.strip()[:1000] if output.strip() else "No output from Claude"
             _db_update_task(
                 task_id,
                 status="failed",
                 plan_raw=output,
-                error_message="Failed to parse planning output as JSON",
+                error_message=f"Planning failed — Claude output:\n{err_detail}",
             )
-            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Failed to parse plan"})
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Planning did not produce a valid JSON plan"})
             return
 
         _db_update_task(
