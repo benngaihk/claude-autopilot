@@ -391,6 +391,24 @@
         <div v-else style="text-align: center; padding: 40px;">
           <a-typography-text type="secondary">No plan data available.</a-typography-text>
         </div>
+
+        <!-- Decision points extracted by fast model -->
+        <div v-if="parsedChoices.length" style="margin-top: 24px; border-top: 1px solid #262626; padding-top: 20px;">
+          <a-typography-title :level="5" style="margin-bottom: 12px;">Decisions Needed</a-typography-title>
+          <div v-for="(choice, ci) in parsedChoices" :key="ci" style="margin-bottom: 16px;">
+            <div style="margin-bottom: 8px; font-weight: 500; color: #d9d9d9;">{{ choice.question }}</div>
+            <a-radio-group
+              :value="choiceSelections[ci]"
+              @change="e => { choiceSelections[ci] = e.target.value; }"
+              style="display: flex; flex-direction: column; gap: 6px;"
+            >
+              <a-radio v-for="(opt, oi) in choice.options" :key="oi" :value="opt.label" style="color: #d9d9d9;">
+                <span style="font-weight: 500;">{{ opt.label }}</span>
+                <span v-if="opt.description" style="color: #8c8c8c; margin-left: 6px;">— {{ opt.description }}</span>
+              </a-radio>
+            </a-radio-group>
+          </div>
+        </div>
       </template>
 
       <template #footer>
@@ -412,7 +430,7 @@
             <a-button @click="planDrawerVisible = false; replanTask(planDrawerTask?.id)">Replan</a-button>
             <a-button danger @click="planDrawerVisible = false; rejectTask(planDrawerTask?.id)">Reject</a-button>
             <a-button type="primary" style="background: #52c41a; border-color: #52c41a;"
-                      @click="planDrawerVisible = false; approveTask(planDrawerTask?.id)">Approve</a-button>
+                      @click="approveWithChoices">Approve</a-button>
           </div>
         </div>
       </template>
@@ -584,6 +602,7 @@ const app = createApp({
     const planDrawerVisible = ref(false);
     const planDrawerTask = ref(null);
     const planFeedback = ref('');
+    const choiceSelections = reactive({});
 
     // Diff Drawer
     const diffDrawerVisible = ref(false);
@@ -642,8 +661,18 @@ const app = createApp({
 
     const planContent = computed(() => {
       if (!planDrawerTask.value?.plan) return null;
-      // Plan is now stored as plain markdown text
       return planDrawerTask.value.plan;
+    });
+
+    const parsedChoices = computed(() => {
+      const raw = planDrawerTask.value?.plan_choices;
+      if (!raw) return [];
+      try {
+        const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
     });
 
     const diffLines = computed(() => {
@@ -860,10 +889,15 @@ const app = createApp({
       }
     };
 
-    const approveTask = async (id) => {
+    const approveTask = async (id, selections) => {
       if (!id) return;
       try {
-        const res = await api(`/api/v2/tasks/${id}/approve`, { method: 'POST' });
+        const body = selections ? { choices: selections } : {};
+        const res = await api(`/api/v2/tasks/${id}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
         if (res?.ok) {
           antd.message.success('Task approved');
           await loadTasks();
@@ -974,7 +1008,22 @@ const app = createApp({
     // ── Drawer / Modal Openers ──────────────────────────────────────
     const openPlanDrawer = (task) => {
       planDrawerTask.value = task;
+      planFeedback.value = '';
+      Object.keys(choiceSelections).forEach(k => delete choiceSelections[k]);
       planDrawerVisible.value = true;
+    };
+
+    const approveWithChoices = () => {
+      // Collect user selections into a map
+      const selections = {};
+      parsedChoices.value.forEach((c, i) => {
+        if (choiceSelections[i]) {
+          selections[c.question] = choiceSelections[i];
+        }
+      });
+      planDrawerVisible.value = false;
+      const hasSelections = Object.keys(selections).length > 0;
+      approveTask(planDrawerTask.value?.id, hasSelections ? selections : undefined);
     };
 
     const openDiffDrawer = (task) => {
@@ -1189,7 +1238,7 @@ const app = createApp({
       projects, tasks, selectedProjectId,
       newTaskTitle, newTaskProjectId, creating,
       taskActivities,
-      planDrawerVisible, planDrawerTask, planFeedback,
+      planDrawerVisible, planDrawerTask, planFeedback, choiceSelections,
       diffDrawerVisible, diffDrawerTask, diffData, diffLoading,
       settingsVisible, settingsData, savingSettings, scanning,
       errorModalVisible, errorModalTask,
@@ -1197,11 +1246,11 @@ const app = createApp({
       themeConfig,
 
       // Computed
-      filteredTasks, planContent,
+      filteredTasks, planContent, parsedChoices,
       diffLines, diffTruncated, diffTotalLines, diffFiles,
 
       // Methods
-      createTask, approveTask, rejectTask, replanTask, cancelTask,
+      createTask, approveTask, approveWithChoices, rejectTask, replanTask, cancelTask,
       mergeTask, loadDiff,
       openPlanDrawer, openDiffDrawer, openErrorModal,
       confirmDeleteTask, doDeleteTask,

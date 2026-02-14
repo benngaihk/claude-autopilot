@@ -54,6 +54,7 @@ def init_db():
                 CHECK(status IN ('created','planning','review','executing','done','failed','rejected')),
             plan TEXT,
             plan_raw TEXT,
+            plan_choices TEXT,
             execution_result TEXT,
             worktree_path TEXT,
             branch_name TEXT,
@@ -74,6 +75,11 @@ def init_db():
             value TEXT NOT NULL
         );
     """)
+    # Migrate: add plan_choices column if missing
+    try:
+        conn.execute("SELECT plan_choices FROM tasks LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE tasks ADD COLUMN plan_choices TEXT")
     # Insert default settings if not present
     defaults = {
         "scan_paths": json.dumps([str(PROJECT_DIR.parent)]),
@@ -1818,10 +1824,10 @@ def _get_workspace_root() -> str:
 
 
 _TASK_COLUMNS = frozenset({
-    "title", "description", "status", "plan", "plan_raw", "execution_result",
-    "worktree_path", "branch_name", "diff_stat", "diff_content", "error_message",
-    "claude_pid", "created_at", "updated_at", "planned_at", "approved_at",
-    "executed_at", "merged_at",
+    "title", "description", "status", "plan", "plan_raw", "plan_choices",
+    "execution_result", "worktree_path", "branch_name", "diff_stat",
+    "diff_content", "error_message", "claude_pid", "created_at", "updated_at",
+    "planned_at", "approved_at", "executed_at", "merged_at",
 })
 
 
@@ -2006,6 +2012,65 @@ async def _merge_branch(project_path: str, task_id: str, main_branch: str, title
     return True, stdout.decode(errors="replace")
 
 
+# ── V2 Plan Review (fast model) ────────────────────────────────────────────
+
+_CHOICE_EXTRACT_PROMPT = """Analyze the following task plan and determine if it contains decision points where the user needs to choose between options.
+
+PLAN:
+{plan}
+
+Look for:
+- Multiple approaches/strategies presented (e.g., "Option A vs Option B")
+- Technology choices (e.g., "use Redis or Memcached")
+- Scope decisions (e.g., "minimal fix vs full refactor")
+- Any place the planner says "could", "alternatively", "or", "either...or"
+
+Output ONLY a JSON object (no markdown, no explanation):
+- If choices found: {{"choices": [{{"question": "...", "options": [{{"label": "short name", "description": "one-line explanation"}}]}}]}}
+- If no choices needed: {{"choices": []}}"""
+
+
+async def _extract_plan_choices(plan_text: str) -> str | None:
+    """Use a fast model to scan the plan and extract decision points as JSON."""
+    try:
+        env = {**os.environ}
+        env.pop("CLAUDECODE", None)
+        prompt = _CHOICE_EXTRACT_PROMPT.format(plan=plan_text[:8000])
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--model", "haiku",
+            "--max-turns", "1",
+            "--output-format", "text",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        raw = stdout.decode(errors="replace").strip()
+        if not raw:
+            return None
+
+        # Extract JSON from possible markdown wrapper
+        json_match = re.search(r"```(?:json)?\s*\n?(.*?)```", raw, re.DOTALL)
+        json_str = json_match.group(1).strip() if json_match else raw
+
+        # Validate JSON
+        parsed = json.loads(json_str)
+        choices = parsed.get("choices", [])
+        if not choices:
+            return None
+        # Validate structure
+        for c in choices:
+            if not c.get("question") or not c.get("options") or len(c["options"]) < 2:
+                choices.remove(c)
+        if not choices:
+            return None
+        return json.dumps(choices, ensure_ascii=False)
+    except Exception:
+        # Non-critical — if extraction fails, just skip choices
+        return None
+
+
 # ── V2 Planning Function ────────────────────────────────────────────────────
 
 async def _run_v2_planning(task_id: str, feedback: str | None = None):
@@ -2098,15 +2163,23 @@ Keep it concise but informative. Do NOT write any code — only describe the pla
             await broadcast({"type": "task_failed", "task_id": task_id, "error": "Planning produced no output"})
             return
 
-        # Store raw markdown text as the plan (no JSON parsing needed)
+        # Quick review scan: use a fast model to extract choices needing user input
+        choices_json = await _extract_plan_choices(output)
+
         _db_update_task(
             task_id,
             status="review",
             plan=output,
             plan_raw=output,
+            plan_choices=choices_json,
             planned_at=datetime.utcnow().isoformat(),
         )
-        await broadcast({"type": "task_plan_ready", "task_id": task_id, "plan": output})
+        await broadcast({
+            "type": "task_plan_ready",
+            "task_id": task_id,
+            "plan": output,
+            "plan_choices": choices_json,
+        })
 
     except Exception as e:
         _db_update_task(task_id, status="failed", error_message=str(e))
@@ -2441,8 +2514,12 @@ async def api_v2_task_delete(task_id: str):
     return {"ok": True}
 
 
+class V2ApproveRequest(BaseModel):
+    choices: dict | None = None
+
+
 @app.post("/api/v2/tasks/{task_id}/approve")
-async def api_v2_task_approve(task_id: str):
+async def api_v2_task_approve(task_id: str, body: V2ApproveRequest = V2ApproveRequest()):
     """Approve plan, create worktree, start execution."""
     task = _db_get_task(task_id)
     if not task:
@@ -2453,6 +2530,15 @@ async def api_v2_task_approve(task_id: str):
             content={"error": f"Cannot approve task in status '{task['status']}'"},
         )
 
+    # If user made choices, append them to the plan so execution sees them
+    plan = task.get("plan") or ""
+    if body.choices:
+        lines = ["\n\n---\n**User decisions:**"]
+        for question, answer in body.choices.items():
+            lines.append(f"- {question}: **{answer}**")
+        plan += "\n".join(lines)
+        _db_update_task(task_id, plan=plan)
+
     _db_update_task(
         task_id,
         status="executing",
@@ -2461,7 +2547,6 @@ async def api_v2_task_approve(task_id: str):
 
     await broadcast({"type": "task_approved", "task_id": task_id})
 
-    # Launch execution in background
     asyncio.create_task(_run_v2_execution(task_id))
 
     return {"ok": True, "task": _db_get_task(task_id)}
