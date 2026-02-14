@@ -2,6 +2,9 @@
 .autopilot/logs/
 .autopilot/memory/
 .autopilot/summaries/
+.worktrees/
+*.db
 __pycache__/
 *.pyc
 .env
+.venv/

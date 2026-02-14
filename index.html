@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Claude Autopilot</title>
+  <title>Claude Batch Planner</title>
   <!-- Vue 3 -->
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <!-- dayjs + plugins (required by antd-vue) -->
@@ -15,41 +15,13 @@
   <script src="https://unpkg.com/dayjs/plugin/weekYear.js"></script>
   <script src="https://unpkg.com/dayjs/plugin/advancedFormat.js"></script>
   <script src="https://unpkg.com/dayjs/plugin/quarterOfYear.js"></script>
+  <script src="https://unpkg.com/dayjs/plugin/relativeTime.js"></script>
   <!-- Ant Design Vue 4.x -->
   <script src="https://unpkg.com/ant-design-vue@4.2.6/dist/antd.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/ant-design-vue@4.2.6/dist/reset.css">
   <style>
     [v-cloak] { display: none; }
     html, body { margin: 0; padding: 0; background: #0a0a0a; color: #e8e8e8; min-height: 100vh; }
-
-    /* ── Kanban Board ─────────────────────────────────────── */
-    .kanban-wrap { display: flex; gap: 14px; padding: 18px; overflow-x: auto; flex: 1; min-height: 0; }
-    .kanban-col { flex: 1; min-width: 240px; max-width: 340px; display: flex; flex-direction: column; }
-    .kanban-col-body { flex: 1; overflow-y: auto; padding: 8px; }
-    .task-card { cursor: pointer; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); margin-bottom: 8px; }
-    .task-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(22, 119, 255, 0.12); }
-
-    /* ── Animations ───────────────────────────────────────── */
-    .pulse-dot { animation: pulse 2s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-    /* ── Scrollbar ────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #555; }
-
-    /* ── Landing Page ─────────────────────────────────────── */
-    .landing-center {
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: radial-gradient(ellipse at 50% 0%, rgba(22, 119, 255, 0.08) 0%, transparent 60%),
-                  radial-gradient(ellipse at 80% 50%, rgba(114, 46, 209, 0.05) 0%, transparent 50%),
-                  #0a0a0a;
-    }
-    .landing-form { width: 100%; max-width: 480px; padding: 0 24px; }
 
     /* ── Gradient Title ───────────────────────────────────── */
     .gradient-title {
@@ -58,7 +30,6 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      font-size: 28px;
       font-weight: 700;
       animation: shimmer 6s ease-in-out infinite;
     }
@@ -67,57 +38,216 @@
       50% { background-position: 100% 50%; }
     }
 
-    /* ── Full Height Layout ───────────────────────────────── */
-    .full-height { height: 100vh; display: flex; flex-direction: column; background: #0a0a0a; }
-
     /* ── Top Bar Glass Effect ─────────────────────────────── */
     .top-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 20px;
+      padding: 0 24px;
       height: 56px;
       line-height: 56px;
       background: rgba(20, 20, 20, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
 
-    /* ── Output Panel ─────────────────────────────────────── */
-    .output-panel {
-      border-top: 1px solid rgba(255, 255, 255, 0.06);
-      background: rgba(20, 20, 20, 0.5);
+    /* ── Main Content ─────────────────────────────────────── */
+    .main-content {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px 24px 40px;
     }
 
-    /* ── Markdown rendered PRD ────────────────────────────── */
-    .prd-content h2 { font-size: 16px; font-weight: 600; margin: 16px 0 8px; color: #e8e8e8; border-bottom: 1px solid #262626; padding-bottom: 4px; }
-    .prd-content h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: #d9d9d9; }
-    .prd-content p { margin: 6px 0; line-height: 1.6; font-size: 13px; }
-    .prd-content ul, .prd-content ol { padding-left: 20px; margin: 6px 0; }
-    .prd-content li { font-size: 13px; line-height: 1.6; margin: 2px 0; }
-    .prd-content code { background: #1a1a1a; padding: 1px 5px; border-radius: 3px; font-size: 12px; color: #ff85c0; }
-    .prd-content pre { background: #1a1a1a; padding: 12px; border-radius: 6px; overflow-x: auto; }
-    .prd-content pre code { padding: 0; background: transparent; }
-    .prd-content strong { color: #fff; }
+    /* ── Task Input Area ──────────────────────────────────── */
+    .task-input-area {
+      background: rgba(20, 20, 20, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
 
-    /* ── Changed file list ────────────────────────────────── */
-    .file-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; font-family: 'SF Mono', 'Menlo', monospace; border-radius: 4px; }
-    .file-item:hover { background: rgba(255,255,255,0.04); }
+    /* ── Task Card ────────────────────────────────────────── */
+    .task-card {
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      margin-bottom: 12px;
+      border-radius: 10px !important;
+    }
+    .task-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(22, 119, 255, 0.12);
+    }
+    .task-card-body {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .task-card-left {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+    }
+    .task-card-center {
+      flex: 1;
+      min-width: 0;
+    }
+    .task-card-right {
+      flex-shrink: 0;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .task-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e8e8e8;
+      margin: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .task-meta {
+      font-size: 12px;
+      color: #8c8c8c;
+      margin-top: 2px;
+    }
 
-    /* ── Test output ──────────────────────────────────────── */
-    .test-output {
+    /* ── Scrollbar ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+    /* ── Pulse animation ──────────────────────────────────── */
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* ── Diff display ─────────────────────────────────────── */
+    .diff-container {
       font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-      font-size: 11px;
+      font-size: 12px;
+      line-height: 1.6;
+      overflow-x: auto;
+      border-radius: 8px;
+      background: #111;
+      border: 1px solid #262626;
+    }
+    .diff-line {
+      padding: 0 12px;
+      white-space: pre;
+      min-height: 20px;
+    }
+    .diff-line-add {
+      background: rgba(46, 160, 67, 0.15);
+      color: #7ee787;
+    }
+    .diff-line-del {
+      background: rgba(248, 81, 73, 0.15);
+      color: #ffa198;
+    }
+    .diff-line-hunk {
+      background: rgba(56, 58, 194, 0.2);
+      color: #a5b4fc;
+      font-weight: 600;
+    }
+    .diff-line-normal {
+      color: #8c8c8c;
+    }
+    .diff-stat-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 16px;
+      background: rgba(20, 20, 20, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+
+    /* ── Markdown rendered content ────────────────────────── */
+    .md-content h1 { font-size: 18px; font-weight: 700; margin: 16px 0 8px; color: #e8e8e8; }
+    .md-content h2 { font-size: 16px; font-weight: 600; margin: 16px 0 8px; color: #e8e8e8; border-bottom: 1px solid #262626; padding-bottom: 4px; }
+    .md-content h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; color: #d9d9d9; }
+    .md-content p { margin: 6px 0; line-height: 1.6; font-size: 13px; }
+    .md-content ul, .md-content ol { padding-left: 20px; margin: 6px 0; }
+    .md-content li { font-size: 13px; line-height: 1.6; margin: 2px 0; }
+    .md-content code { background: #1a1a1a; padding: 1px 5px; border-radius: 3px; font-size: 12px; color: #ff85c0; }
+    .md-content pre { background: #1a1a1a; padding: 12px; border-radius: 6px; overflow-x: auto; }
+    .md-content pre code { padding: 0; background: transparent; }
+    .md-content strong { color: #fff; }
+
+    /* ── Error display ────────────────────────────────────── */
+    .error-output {
+      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      font-size: 12px;
       line-height: 1.6;
       white-space: pre-wrap;
       word-break: break-all;
-      padding: 12px;
-      max-height: 200px;
+      padding: 16px;
+      background: #1a1a1a;
+      border-radius: 8px;
+      color: #ff7875;
+      max-height: 400px;
       overflow: auto;
-      background: #0a0a0a;
-      border-radius: 6px;
+    }
+
+    /* ── Files table in plan drawer ───────────────────────── */
+    .files-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .files-table th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid #262626;
       color: #8c8c8c;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .files-table td {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: #e8e8e8;
+      font-family: 'SF Mono', 'Menlo', monospace;
+      font-size: 12px;
+    }
+    .files-table tr:hover td {
+      background: rgba(255,255,255,0.02);
+    }
+
+    /* ── Empty state ──────────────────────────────────────── */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #595959;
+    }
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.3;
+    }
+
+    /* ── Activity indicator on card ───────────────────────── */
+    .activity-indicator {
+      font-size: 11px;
+      color: #8c8c8c;
+      margin-top: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .activity-indicator .dot {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #1677ff;
+      animation: pulse 1.5s infinite;
     }
   </style>
 </head>
@@ -125,312 +255,374 @@
 <div id="app" v-cloak>
   <a-config-provider :theme="themeConfig">
 
-  <!-- ==================== LANDING VIEW ==================== -->
-  <div v-if="view === 'landing'" class="landing-center">
-    <div class="landing-form">
-      <!-- Logo -->
-      <div style="text-align: center; margin-bottom: 40px;">
-        <h1 class="gradient-title" style="margin-bottom: 8px;">Claude Autopilot</h1>
-        <a-typography-text type="secondary" style="font-size: 14px;">
-          Select a workspace, set a goal, generate a plan for review.
-        </a-typography-text>
-      </div>
-
-      <!-- Form -->
-      <a-space direction="vertical" :size="16" style="width: 100%;">
-        <div>
-          <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 6px; display: block;">Workspace</a-typography-text>
-          <a-space-compact style="width: 100%;">
-            <a-input v-model:value="workspace" placeholder="/path/to/your/project" size="large" />
-            <a-button size="large" @click="pickFolder" :loading="pickingFolder">Browse</a-button>
-          </a-space-compact>
-        </div>
-        <div>
-          <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 6px; display: block;">Goal</a-typography-text>
-          <a-textarea v-model:value="goal" :rows="3"
-                      placeholder="e.g. Implement user authentication with JWT..."
-                      size="large" />
-        </div>
-        <a-button type="primary" block size="large"
-                  @click="generatePlan"
-                  :disabled="!workspace.trim() || !goal.trim()"
-                  :loading="planLoading">
-          Generate Plan
-        </a-button>
-      </a-space>
-
-      <!-- Recent Workspaces -->
-      <div v-if="recentWorkspaces.length" style="margin-top: 32px;">
-        <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 8px; display: block;">Recent</a-typography-text>
-        <a-list :data-source="recentWorkspaces" size="small" :split="false">
-          <template #renderItem="{ item }">
-            <a-list-item @click="workspace = item" style="cursor: pointer; padding: 6px 12px; border-radius: 6px;">
-              <a-typography-text code style="font-size: 13px;">{{ item }}</a-typography-text>
-            </a-list-item>
-          </template>
-        </a-list>
-      </div>
-
-      <!-- Error -->
-      <a-alert v-if="error" :message="error" type="error" show-icon closable @close="error = ''" style="margin-top: 16px;" />
-    </div>
-  </div>
-
-  <!-- ==================== PLANNING VIEW ==================== -->
-  <div v-else-if="view === 'planning'" class="landing-center">
-    <div style="text-align: center;">
-      <a-spin size="large" />
-      <div style="margin-top: 20px;">
-        <h2 class="gradient-title" style="font-size: 22px; margin-bottom: 8px;">Generating Plan...</h2>
-        <a-typography-text type="secondary" style="font-size: 13px;">
-          Claude is analyzing the codebase and generating task cards with PRDs.
-        </a-typography-text>
-        <br>
-        <a-typography-text v-if="planMessage" type="secondary" style="font-size: 12px; margin-top: 8px; display: inline-block;">
-          {{ planMessage }}
-        </a-typography-text>
-      </div>
-      <div style="margin-top: 24px;">
-        <a-button danger @click="cancelPlanning">Cancel</a-button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ==================== DASHBOARD VIEW ==================== -->
-  <div v-else class="full-height">
-
-    <!-- Top Bar -->
+    <!-- ==================== TOP BAR ==================== -->
     <div class="top-bar">
-      <a-space :size="12" align="center">
-        <span class="gradient-title" style="font-size: 18px;">Claude Autopilot</span>
-        <!-- Status Badge -->
-        <a-tag v-if="executingTaskId" color="processing">
-          <template #icon><span class="pulse-dot" style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #1677ff; margin-right: 6px; vertical-align: middle;"></span></template>
-          Executing {{ executingTaskId }}
-        </a-tag>
-        <a-tag v-else-if="view === 'done'" color="success">All Done</a-tag>
-        <a-tag v-else color="default">Review Mode</a-tag>
-      </a-space>
-      <a-space :size="12" align="center">
-        <a-typography-text type="secondary" code style="font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;" :title="workspace">{{ workspace }}</a-typography-text>
-        <a-divider type="vertical" />
-        <a-typography-text type="secondary" style="font-size: 13px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block;" :title="goal">{{ goal }}</a-typography-text>
-        <a-button size="small" @click="resetToLanding">New Plan</a-button>
-      </a-space>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span class="gradient-title" style="font-size: 20px;">Claude Batch Planner</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <a-select
+          v-model:value="selectedProjectId"
+          style="min-width: 180px;"
+          placeholder="All Projects"
+          allow-clear
+          @change="onProjectFilterChange"
+        >
+          <a-select-option value="">All Projects</a-select-option>
+          <a-select-option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
+        </a-select>
+        <a-button @click="settingsVisible = true" shape="circle">
+          <template #icon><SettingOutlined /></template>
+        </a-button>
+      </div>
     </div>
 
-    <!-- Completion Banner -->
-    <a-alert v-if="view === 'done'" message="All tasks completed!" type="success" banner show-icon>
-      <template #action>
-        <a-button size="small" type="primary" @click="resetToLanding">New Plan</a-button>
+    <!-- ==================== MAIN CONTENT ==================== -->
+    <div class="main-content">
+
+      <!-- Task Input Area -->
+      <div class="task-input-area">
+        <div style="display: flex; gap: 12px; align-items: flex-start;">
+          <a-input
+            v-model:value="newTaskTitle"
+            placeholder="Enter task description..."
+            size="large"
+            style="flex: 1;"
+            @keyup.enter="createTask"
+          />
+          <a-select
+            v-model:value="newTaskProjectId"
+            placeholder="Project"
+            size="large"
+            style="min-width: 180px;"
+          >
+            <a-select-option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
+          </a-select>
+          <a-button
+            type="primary"
+            size="large"
+            @click="createTask"
+            :disabled="!newTaskTitle.trim() || !newTaskProjectId"
+            :loading="creating"
+          >Create</a-button>
+        </div>
+      </div>
+
+      <!-- Task List -->
+      <div v-if="filteredTasks.length === 0" class="empty-state">
+        <div class="empty-state-icon">
+          <InboxOutlined />
+        </div>
+        <a-typography-text type="secondary" style="font-size: 14px;">No tasks yet. Create one above to get started.</a-typography-text>
+      </div>
+
+      <div v-for="task in filteredTasks" :key="task.id">
+        <a-card class="task-card" size="small" :body-style="{ padding: '14px 18px' }">
+          <div class="task-card-body">
+            <!-- Status Icon -->
+            <div class="task-card-left">
+              <a-spin v-if="task.status === 'planning' || task.status === 'executing'" size="small" />
+              <EyeOutlined v-else-if="task.status === 'review'" style="font-size: 18px; color: #fa8c16;" />
+              <CheckCircleOutlined v-else-if="task.status === 'done'" style="font-size: 18px; color: #52c41a;" />
+              <CloseCircleOutlined v-else-if="task.status === 'failed'" style="font-size: 18px; color: #ff4d4f;" />
+              <MinusCircleOutlined v-else-if="task.status === 'rejected'" style="font-size: 18px; color: #8c8c8c;" />
+              <ClockCircleOutlined v-else style="font-size: 18px; color: #8c8c8c;" />
+            </div>
+
+            <!-- Title + Meta -->
+            <div class="task-card-center">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <a-tag
+                  :color="statusTagColor(task.status)"
+                  :bordered="false"
+                  style="font-size: 11px; text-transform: capitalize;"
+                >{{ statusLabel(task.status) }}</a-tag>
+                <p class="task-title">{{ task.title }}</p>
+              </div>
+              <div class="task-meta">
+                {{ projectName(task.project_id) }} &middot; {{ relativeTime(task.created_at || task.updated_at) }}
+              </div>
+              <!-- Activity indicator for executing tasks -->
+              <div v-if="task.status === 'executing' && taskActivities[task.id]" class="activity-indicator">
+                <span class="dot"></span>
+                <span>{{ taskActivities[task.id] }}</span>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="task-card-right">
+              <!-- Planning: Cancel only -->
+              <a-button v-if="task.status === 'planning'" size="small" @click.stop="cancelTask(task.id)">Cancel</a-button>
+
+              <!-- Review: View Plan, Approve, Reject -->
+              <template v-if="task.status === 'review'">
+                <a-button size="small" @click.stop="openPlanDrawer(task)">View Plan</a-button>
+                <a-button size="small" type="primary" style="background: #52c41a; border-color: #52c41a;" @click.stop="approveTask(task.id)">Approve</a-button>
+                <a-button size="small" danger @click.stop="rejectTask(task.id)">Reject</a-button>
+              </template>
+
+              <!-- Executing: Cancel -->
+              <a-button v-if="task.status === 'executing'" size="small" @click.stop="cancelTask(task.id)">Cancel</a-button>
+
+              <!-- Done: View Diff, Merge, Delete -->
+              <template v-if="task.status === 'done'">
+                <a-button size="small" @click.stop="openDiffDrawer(task)">View Diff</a-button>
+                <a-button size="small" type="primary" @click.stop="mergeTask(task.id)">Merge</a-button>
+                <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
+                  <template #icon><DeleteOutlined /></template>
+                </a-button>
+              </template>
+
+              <!-- Failed: View Error, Retry, Delete -->
+              <template v-if="task.status === 'failed'">
+                <a-button size="small" @click.stop="openErrorModal(task)">View Error</a-button>
+                <a-button size="small" type="primary" @click.stop="replanTask(task.id)">Retry</a-button>
+                <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
+                  <template #icon><DeleteOutlined /></template>
+                </a-button>
+              </template>
+
+              <!-- Rejected: Replan, Delete -->
+              <template v-if="task.status === 'rejected'">
+                <a-button size="small" type="primary" @click.stop="replanTask(task.id)">Replan</a-button>
+                <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
+                  <template #icon><DeleteOutlined /></template>
+                </a-button>
+              </template>
+            </div>
+          </div>
+        </a-card>
+      </div>
+    </div>
+
+    <!-- ==================== PLAN REVIEW DRAWER ==================== -->
+    <a-drawer
+      :open="planDrawerVisible"
+      @close="planDrawerVisible = false"
+      :width="640"
+      placement="right"
+      :destroy-on-close="true"
+    >
+      <template #title>
+        <div>
+          <span style="font-weight: 600;">{{ planDrawerTask?.title }}</span>
+          <a-typography-text type="secondary" code style="margin-left: 8px; font-size: 11px;">#{{ planDrawerTask?.id }}</a-typography-text>
+        </div>
       </template>
-    </a-alert>
 
-    <!-- Kanban Board -->
-    <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
-      <div class="kanban-wrap">
-        <div v-for="col in columns" :key="col.status" class="kanban-col">
-          <a-card size="small" :body-style="{ padding: 0 }" style="flex: 1; display: flex; flex-direction: column;">
-            <template #title>
-              <a-space>
-                <a-badge :color="col.color" />
-                <span style="font-size: 13px; font-weight: 600;">{{ col.label }}</span>
-                <a-badge :count="tasksByStatus(col.status).length" :number-style="{ backgroundColor: col.badgeBg }" />
-              </a-space>
-            </template>
-            <div class="kanban-col-body">
-              <a-card v-for="task in tasksByStatus(col.status)" :key="task.id"
-                      size="small" hoverable class="task-card"
-                      :bordered="selectedTask?.id === task.id"
-                      :style="selectedTask?.id === task.id ? { borderColor: '#1677ff' } : {}"
-                      @click="selectTask(task)">
-                <a-space direction="vertical" :size="4" style="width: 100%;">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <a-typography-text type="secondary" code style="font-size: 11px;">{{ task.id }}</a-typography-text>
-                    <a-tag v-if="task.status === 'in_progress'" color="processing" :bordered="false" style="font-size: 11px; margin: 0;">Executing...</a-tag>
-                    <a-tag v-else-if="task.status === 'testing'" color="warning" :bordered="false" style="font-size: 11px; margin: 0;">Testing...</a-tag>
-                    <a-tag v-else-if="task.committed" color="success" :bordered="false" style="font-size: 11px; margin: 0;">Committed</a-tag>
-                  </div>
-                  <a-typography-text strong style="font-size: 13px; line-height: 1.4;">{{ task.subject }}</a-typography-text>
-                  <!-- Card action buttons -->
-                  <div style="display: flex; gap: 6px; margin-top: 4px;" @click.stop>
-                    <a-button v-if="task.status === 'pending'" type="primary" size="small"
-                              :disabled="hasBlockingDeps(task) || !!executingTaskId"
-                              @click="executeTask(task.id)">
-                      Execute
-                    </a-button>
-                    <a-tooltip v-if="task.status === 'pending' && hasBlockingDeps(task)" title="Waiting for dependencies">
-                      <a-tag :bordered="false" style="font-size: 10px;">Blocked</a-tag>
-                    </a-tooltip>
-                    <a-button v-if="task.status === 'completed' && !task.committed" type="primary" size="small"
-                              @click="commitTask(task.id)">
-                      Commit
-                    </a-button>
-                    <a-tag v-if="task.status === 'completed' && task.changed_files?.length" :bordered="false" style="font-size: 10px;">
-                      {{ task.changed_files.length }} files
-                    </a-tag>
-                    <a-button v-if="task.status === 'failed'" size="small" @click="retryTask(task.id)">Retry</a-button>
-                    <a-button v-if="task.status === 'failed' || (task.status === 'completed' && !task.committed)" size="small"
-                              @click="editTask(task.id)">Edit</a-button>
-                  </div>
-                </a-space>
-              </a-card>
-              <a-empty v-if="tasksByStatus(col.status).length === 0" :image="false" description="No tasks" style="padding: 24px 0;">
-                <template #image><span></span></template>
-              </a-empty>
-            </div>
-          </a-card>
-        </div>
-      </div>
-
-      <!-- Activity Feed Panel -->
-      <div class="output-panel">
-        <a-collapse v-model:activeKey="outputActiveKey" :bordered="false" style="background: transparent;">
-          <a-collapse-panel key="output" style="border: none;">
-            <template #header>
-              <a-space>
-                <a-typography-text type="secondary" strong>Activity</a-typography-text>
-                <a-tag v-if="executingTaskId" color="processing" :bordered="false" style="font-size: 11px;">live</a-tag>
-                <a-tag v-if="activities.length" :bordered="false" style="font-size: 11px;">{{ activities.length }}</a-tag>
-              </a-space>
-            </template>
-            <!-- Activity Feed -->
-            <div ref="activityEl" style="max-height: 30vh; overflow: auto; padding: 8px 12px;">
-              <div v-if="activities.length === 0" style="text-align: center; padding: 16px;">
-                <a-typography-text type="secondary">Waiting for activity...</a-typography-text>
-              </div>
-              <div v-for="(a, i) in activities" :key="i"
-                   style="display: flex; align-items: flex-start; gap: 10px; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px;">
-                <a-typography-text type="secondary" code style="font-size: 11px; flex-shrink: 0; min-width: 56px;">{{ a.timestamp }}</a-typography-text>
-                <a-tag v-if="a.task_id" :bordered="false" size="small" color="blue" style="font-size: 10px; flex-shrink: 0;">{{ a.task_id }}</a-tag>
-                <span style="flex-shrink: 0; width: 20px; text-align: center;">{{ activityIcon(a.event) }}</span>
-                <a-typography-text :type="a.event === 'result' ? 'success' : a.event === 'text' ? 'secondary' : undefined"
-                                   style="font-size: 12px; line-height: 1.5; word-break: break-all;">
-                  <a-tag v-if="a.tool" :bordered="false" size="small" style="font-size: 10px; margin-right: 4px; vertical-align: middle;">{{ a.tool }}</a-tag>
-                  {{ a.summary }}
-                </a-typography-text>
-              </div>
-            </div>
-          </a-collapse-panel>
-        </a-collapse>
-      </div>
-    </div>
-
-    <!-- Task Detail Drawer -->
-    <a-drawer :open="!!selectedTask" @close="selectedTask = null"
-              :width="560" placement="right"
-              :title="selectedTask ? selectedTask.id + ': ' + selectedTask.subject : ''">
-      <template v-if="selectedTask">
-        <!-- Status + Test Badge Row -->
-        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-          <a-descriptions :column="2" size="small" bordered style="flex: 1;">
-            <a-descriptions-item label="Status">
-              <a-tag :color="statusColor(selectedTask.status)">{{ selectedTask.status }}</a-tag>
-            </a-descriptions-item>
-            <a-descriptions-item label="Tests">
-              <a-tag v-if="selectedTask.test_result === 'passed'" color="success">Passed</a-tag>
-              <a-tag v-else-if="selectedTask.test_result === 'failed'" color="error">Failed</a-tag>
-              <a-tag v-else color="default">Not Run</a-tag>
-            </a-descriptions-item>
-          </a-descriptions>
+      <template v-if="planDrawerTask">
+        <!-- Description -->
+        <div v-if="planDrawerTask.description" style="margin-bottom: 20px;">
+          <a-typography-title :level="5" style="margin-bottom: 8px;">Description</a-typography-title>
+          <a-typography-paragraph type="secondary">{{ planDrawerTask.description }}</a-typography-paragraph>
         </div>
 
-        <!-- Dependencies -->
-        <div v-if="selectedTask.dependencies?.length" style="margin-bottom: 16px;">
-          <a-typography-text type="secondary" style="font-size: 12px;">Dependencies: </a-typography-text>
-          <a-tag v-for="dep in selectedTask.dependencies" :key="dep" style="margin: 2px;"
-                 :color="isDepCompleted(dep) ? 'success' : 'default'">
-            {{ dep }}
-          </a-tag>
-        </div>
-
-        <!-- PRD Section -->
-        <div style="margin-bottom: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <a-typography-title :level="5" style="margin: 0;">PRD</a-typography-title>
-            <a-button v-if="!editingPrd" size="small" @click="startEditPrd">Edit</a-button>
-            <a-space v-else>
-              <a-button size="small" type="primary" @click="savePrd">Save</a-button>
-              <a-button size="small" @click="cancelEditPrd">Cancel</a-button>
-            </a-space>
+        <template v-if="parsedPlan">
+          <!-- Plan Summary -->
+          <div v-if="parsedPlan.summary" style="margin-bottom: 20px;">
+            <a-typography-title :level="5" style="margin-bottom: 8px;">Summary</a-typography-title>
+            <div class="md-content" v-html="renderMarkdown(parsedPlan.summary)"></div>
           </div>
-          <div v-if="!editingPrd" class="prd-content"
-               style="border: 1px solid #262626; border-radius: 8px; padding: 16px; min-height: 80px;"
-               v-html="renderMarkdown(selectedTask.prd || '')">
-          </div>
-          <a-textarea v-else v-model:value="editPrdContent"
-                      :rows="12" style="font-family: 'SF Mono', monospace; font-size: 13px;" />
-        </div>
 
-        <!-- Changed Files -->
-        <div v-if="selectedTask.changed_files?.length" style="margin-bottom: 16px;">
-          <a-typography-title :level="5" style="margin-bottom: 8px;">
-            Changed Files ({{ selectedTask.changed_files.length }})
-          </a-typography-title>
-          <div style="border: 1px solid #262626; border-radius: 8px; padding: 8px;">
-            <div v-for="f in selectedTask.changed_files" :key="f" class="file-item">
-              <span style="color: #52c41a;">M</span>
-              <span>{{ f }}</span>
+          <!-- Files to Modify -->
+          <div v-if="parsedPlan.files_to_modify?.length" style="margin-bottom: 20px;">
+            <a-typography-title :level="5" style="margin-bottom: 8px;">Files to Modify</a-typography-title>
+            <div style="border: 1px solid #262626; border-radius: 8px; overflow: hidden;">
+              <table class="files-table">
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th style="width: 90px;">Action</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(f, i) in parsedPlan.files_to_modify" :key="i">
+                    <td>{{ f.path }}</td>
+                    <td>
+                      <a-tag
+                        :color="f.action === 'create' ? 'green' : f.action === 'delete' ? 'red' : 'blue'"
+                        :bordered="false"
+                        style="font-size: 11px;"
+                      >{{ f.action }}</a-tag>
+                    </td>
+                    <td style="color: #8c8c8c;">{{ f.description }}</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
-        </div>
 
-        <!-- Test Output -->
-        <div v-if="selectedTask.test_output" style="margin-bottom: 16px;">
-          <a-typography-title :level="5" style="margin-bottom: 8px;">Test Output</a-typography-title>
-          <div class="test-output" :style="{ color: selectedTask.test_result === 'passed' ? '#52c41a' : '#ff4d4f' }">{{ selectedTask.test_output }}</div>
-        </div>
+          <!-- Approach -->
+          <div v-if="parsedPlan.approach" style="margin-bottom: 20px;">
+            <a-typography-title :level="5" style="margin-bottom: 8px;">Approach</a-typography-title>
+            <div class="md-content" v-html="renderMarkdown(parsedPlan.approach)"></div>
+          </div>
 
-        <!-- Commits -->
-        <div v-if="selectedTask.committed && selectedTask.commit_hash" style="margin-bottom: 16px;">
-          <a-typography-title :level="5" style="margin-bottom: 8px;">Commit</a-typography-title>
-          <a-tag color="success"><a-typography-text code>{{ selectedTask.commit_hash }}</a-typography-text></a-tag>
-        </div>
+          <!-- Risks -->
+          <div v-if="parsedPlan.risks?.length" style="margin-bottom: 20px;">
+            <a-typography-title :level="5" style="margin-bottom: 8px;">Risks</a-typography-title>
+            <a-alert
+              v-for="(risk, i) in parsedPlan.risks"
+              :key="i"
+              :message="risk"
+              type="warning"
+              show-icon
+              style="margin-bottom: 8px;"
+            />
+          </div>
+        </template>
 
-        <!-- Action Buttons -->
-        <a-divider />
-        <a-space :size="8" wrap>
-          <a-button v-if="selectedTask.status === 'pending'" type="primary"
-                    :disabled="hasBlockingDeps(selectedTask) || !!executingTaskId"
-                    @click="executeTask(selectedTask.id)">
-            Execute
-          </a-button>
-          <a-button v-if="selectedTask.status === 'completed' && !selectedTask.committed" type="primary"
-                    @click="openCommitModal(selectedTask)">
-            Commit to Git
-          </a-button>
-          <a-button v-if="selectedTask.status === 'completed' || selectedTask.status === 'failed'"
-                    @click="runTestForTask(selectedTask.id)">
-            Re-run Tests
-          </a-button>
-          <a-button v-if="selectedTask.status === 'failed'" type="primary" danger
-                    @click="retryTask(selectedTask.id)">
-            Retry Execution
-          </a-button>
-          <a-button v-if="selectedTask.status === 'failed' || (selectedTask.status === 'completed' && !selectedTask.committed)"
-                    @click="editTask(selectedTask.id)">
-            Edit Code
-          </a-button>
-        </a-space>
+        <div v-else style="text-align: center; padding: 40px;">
+          <a-typography-text type="secondary">No plan data available.</a-typography-text>
+        </div>
+      </template>
+
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <a-button @click="planDrawerVisible = false; replanTask(planDrawerTask?.id)">Replan</a-button>
+          <a-button danger @click="planDrawerVisible = false; rejectTask(planDrawerTask?.id)">Reject</a-button>
+          <a-button type="primary" style="background: #52c41a; border-color: #52c41a;"
+                    @click="planDrawerVisible = false; approveTask(planDrawerTask?.id)">Approve</a-button>
+        </div>
       </template>
     </a-drawer>
 
-    <!-- Commit Modal -->
-    <a-modal v-model:open="commitModalVisible"
-             title="Commit Changes"
-             @ok="confirmCommit"
-             ok-text="Commit"
-             cancel-text="Cancel"
-             :confirm-loading="committing">
-      <div style="padding: 8px 0;">
-        <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 8px; display: block;">
-          Commit message for {{ commitTaskId }}:
-        </a-typography-text>
-        <a-input v-model:value="commitMessage" placeholder="[TASK-001] feat: ..." style="margin-top: 8px;" />
+    <!-- ==================== DIFF VIEW DRAWER ==================== -->
+    <a-drawer
+      :open="diffDrawerVisible"
+      @close="diffDrawerVisible = false"
+      :width="720"
+      placement="right"
+      :destroy-on-close="true"
+    >
+      <template #title>
+        <span style="font-weight: 600;">Diff: {{ diffDrawerTask?.title }}</span>
+      </template>
+
+      <template v-if="diffDrawerTask">
+        <!-- Loading state -->
+        <div v-if="diffLoading" style="text-align: center; padding: 60px;">
+          <a-spin size="large" />
+          <div style="margin-top: 16px;">
+            <a-typography-text type="secondary">Loading diff...</a-typography-text>
+          </div>
+        </div>
+
+        <template v-else>
+          <!-- Stat bar -->
+          <div v-if="diffData.diff_stat" class="diff-stat-bar">
+            <span>
+              <strong>{{ diffData.diff_stat.files_changed }}</strong>
+              <a-typography-text type="secondary"> files changed</a-typography-text>
+            </span>
+            <span style="color: #52c41a;">+{{ diffData.diff_stat.total_insertions }}</span>
+            <span style="color: #ff4d4f;">-{{ diffData.diff_stat.total_deletions }}</span>
+          </div>
+
+          <!-- File list from diff -->
+          <div v-if="diffFiles.length" style="margin-bottom: 16px;">
+            <div v-for="(f, i) in diffFiles" :key="i"
+                 style="display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; font-family: 'SF Mono', monospace;">
+              <span style="color: #52c41a; min-width: 40px; text-align: right;">+{{ f.additions }}</span>
+              <span style="color: #ff4d4f; min-width: 40px; text-align: right;">-{{ f.deletions }}</span>
+              <span style="color: #e8e8e8;">{{ f.path }}</span>
+            </div>
+          </div>
+
+          <!-- Diff content -->
+          <div v-if="diffData.diff_content" class="diff-container">
+            <template v-if="diffTruncated">
+              <div style="padding: 8px 12px; color: #fa8c16; font-size: 12px; border-bottom: 1px solid #262626;">
+                Diff truncated. {{ diffTotalLines }} lines total.
+              </div>
+            </template>
+            <div v-for="(line, i) in diffLines" :key="i"
+                 :class="diffLineClass(line)"
+                 class="diff-line">{{ line }}</div>
+          </div>
+
+          <div v-if="!diffData.diff_content && !diffData.diff_stat" style="text-align: center; padding: 40px;">
+            <a-typography-text type="secondary">No diff data available.</a-typography-text>
+          </div>
+        </template>
+      </template>
+
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <a-button @click="diffDrawerVisible = false">Close</a-button>
+          <a-button type="primary" @click="diffDrawerVisible = false; mergeTask(diffDrawerTask?.id)">Merge to main</a-button>
+        </div>
+      </template>
+    </a-drawer>
+
+    <!-- ==================== ERROR MODAL ==================== -->
+    <a-modal
+      v-model:open="errorModalVisible"
+      :title="'Error: ' + (errorModalTask?.title || '')"
+      :footer="null"
+      :width="600"
+    >
+      <div v-if="errorModalTask" style="padding: 8px 0;">
+        <div class="error-output">{{ errorModalTask.error || 'Unknown error occurred.' }}</div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+          <a-button danger ghost @click="errorModalVisible = false; confirmDeleteTask(errorModalTask)">Delete</a-button>
+          <a-button type="primary" @click="errorModalVisible = false; replanTask(errorModalTask.id)">Retry</a-button>
+          <a-button @click="errorModalVisible = false">Close</a-button>
+        </div>
       </div>
     </a-modal>
 
-  </div>
+    <!-- ==================== SETTINGS MODAL ==================== -->
+    <a-modal
+      v-model:open="settingsVisible"
+      title="Settings"
+      @ok="saveSettings"
+      ok-text="Save"
+      cancel-text="Close"
+      :confirm-loading="savingSettings"
+    >
+      <div style="padding: 8px 0;">
+        <div style="margin-bottom: 16px;">
+          <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 8px; display: block;">
+            Scan Paths (one path per line)
+          </a-typography-text>
+          <a-textarea
+            v-model:value="settingsData.scan_paths"
+            :rows="4"
+            placeholder="/path/to/projects&#10;/another/path"
+          />
+        </div>
+        <div style="margin-bottom: 16px;">
+          <a-typography-text type="secondary" style="font-size: 12px; margin-bottom: 8px; display: block;">
+            Max Parallel Tasks
+          </a-typography-text>
+          <a-input-number
+            v-model:value="settingsData.max_parallel_tasks"
+            :min="1"
+            :max="10"
+            style="width: 120px;"
+          />
+        </div>
+        <a-button @click="scanProjects" :loading="scanning" block>
+          <template #icon><ScanOutlined /></template>
+          Scan Projects
+        </a-button>
+      </div>
+    </a-modal>
+
+    <!-- ==================== DELETE CONFIRMATION MODAL ==================== -->
+    <a-modal
+      v-model:open="deleteModalVisible"
+      title="Delete Task"
+      @ok="doDeleteTask"
+      ok-text="Delete"
+      :ok-button-props="{ danger: true }"
+      cancel-text="Cancel"
+    >
+      <p>Delete task "{{ deleteModalTask?.title }}"?</p>
+      <p style="color: #8c8c8c; font-size: 13px;">This will remove the worktree and branch.</p>
+    </a-modal>
 
   </a-config-provider>
 </div>
@@ -438,36 +630,54 @@
 <script>
 const { createApp, ref, computed, watch, onMounted, onUnmounted, nextTick } = Vue;
 
+// dayjs plugins
+dayjs.extend(dayjs_plugin_customParseFormat);
+dayjs.extend(dayjs_plugin_weekday);
+dayjs.extend(dayjs_plugin_localeData);
+dayjs.extend(dayjs_plugin_weekOfYear);
+dayjs.extend(dayjs_plugin_weekYear);
+dayjs.extend(dayjs_plugin_advancedFormat);
+dayjs.extend(dayjs_plugin_quarterOfYear);
+dayjs.extend(dayjs_plugin_relativeTime);
+
 const app = createApp({
   setup() {
-    // ── State ──────────────────────────────────────────────────────────
-    const view = ref('landing');           // 'landing' | 'planning' | 'dashboard' | 'done'
-    const workspace = ref('');
-    const goal = ref('');
-    const error = ref('');
-    const recentWorkspaces = ref([]);
+    // ── Core State ──────────────────────────────────────────────────
+    const projects = ref([]);
     const tasks = ref([]);
-    const selectedTask = ref(null);
-    const executingTaskId = ref(null);
-    const pickingFolder = ref(false);
-    const planLoading = ref(false);
-    const planMessage = ref('');
-    const activities = ref([]);
-    const activityEl = ref(null);
-    const outputActiveKey = ref(['output']);
-    const MAX_ACTIVITIES = 200;
+    const selectedProjectId = ref('');
+    const newTaskTitle = ref('');
+    const newTaskProjectId = ref('');
+    const creating = ref(false);
 
-    // PRD editing
-    const editingPrd = ref(false);
-    const editPrdContent = ref('');
+    // Task activities (live indicators)
+    const taskActivities = ref({});
 
-    // Commit modal
-    const commitModalVisible = ref(false);
-    const commitTaskId = ref('');
-    const commitMessage = ref('');
-    const committing = ref(false);
+    // Plan Drawer
+    const planDrawerVisible = ref(false);
+    const planDrawerTask = ref(null);
 
-    // ── Theme config (dark mode) ─────────────────────────────────────
+    // Diff Drawer
+    const diffDrawerVisible = ref(false);
+    const diffDrawerTask = ref(null);
+    const diffData = ref({ diff_stat: null, diff_content: '' });
+    const diffLoading = ref(false);
+
+    // Settings Modal
+    const settingsVisible = ref(false);
+    const settingsData = ref({ scan_paths: '', max_parallel_tasks: 3 });
+    const savingSettings = ref(false);
+    const scanning = ref(false);
+
+    // Error Modal
+    const errorModalVisible = ref(false);
+    const errorModalTask = ref(null);
+
+    // Delete Modal
+    const deleteModalVisible = ref(false);
+    const deleteModalTask = ref(null);
+
+    // ── Theme ───────────────────────────────────────────────────────
     const themeConfig = ref({
       algorithm: antd.theme.darkAlgorithm,
       token: {
@@ -483,462 +693,554 @@ const app = createApp({
       },
     });
 
-    const columns = [
-      { status: 'pending', label: 'Pending', color: '#8c8c8c', badgeBg: '#434343' },
-      { status: 'in_progress', label: 'In Progress', color: '#1677ff', badgeBg: '#1677ff' },
-      { status: 'completed', label: 'Completed', color: '#52c41a', badgeBg: '#52c41a' },
-      { status: 'failed', label: 'Failed', color: '#ff4d4f', badgeBg: '#ff4d4f' },
-    ];
+    // ── Computed ─────────────────────────────────────────────────────
+    const filteredTasks = computed(() => {
+      let list = tasks.value;
+      if (selectedProjectId.value) {
+        list = list.filter(t => t.project_id === selectedProjectId.value);
+      }
+      // Sort: active statuses first (planning, review, executing), then done/failed/rejected; within group by updated_at desc
+      const statusOrder = { executing: 0, review: 1, planning: 2, rejected: 3, failed: 4, done: 5 };
+      return [...list].sort((a, b) => {
+        const oa = statusOrder[a.status] ?? 9;
+        const ob = statusOrder[b.status] ?? 9;
+        if (oa !== ob) return oa - ob;
+        // Same status group: newest first
+        const ta = a.updated_at || a.created_at || '';
+        const tb = b.updated_at || b.created_at || '';
+        return tb.localeCompare(ta);
+      });
+    });
 
-    // ── API helper ─────────────────────────────────────────────────────
+    const parsedPlan = computed(() => {
+      if (!planDrawerTask.value?.plan) return null;
+      try {
+        const plan = typeof planDrawerTask.value.plan === 'string'
+          ? JSON.parse(planDrawerTask.value.plan)
+          : planDrawerTask.value.plan;
+        return plan;
+      } catch {
+        return null;
+      }
+    });
+
+    const diffLines = computed(() => {
+      if (!diffData.value.diff_content) return [];
+      const allLines = diffData.value.diff_content.split('\n');
+      if (allLines.length > 10000) {
+        return allLines.slice(0, 10000);
+      }
+      return allLines;
+    });
+
+    const diffTruncated = computed(() => {
+      if (!diffData.value.diff_content) return false;
+      return diffData.value.diff_content.split('\n').length > 10000;
+    });
+
+    const diffTotalLines = computed(() => {
+      if (!diffData.value.diff_content) return 0;
+      return diffData.value.diff_content.split('\n').length;
+    });
+
+    const diffFiles = computed(() => {
+      if (!diffData.value.diff_content) return [];
+      const files = [];
+      const lines = diffData.value.diff_content.split('\n');
+      let currentFile = null;
+      for (const line of lines) {
+        // Match diff header: diff --git a/path b/path
+        const diffMatch = line.match(/^diff --git a\/(.+) b\/(.+)/);
+        if (diffMatch) {
+          if (currentFile) files.push(currentFile);
+          currentFile = { path: diffMatch[2], additions: 0, deletions: 0 };
+          continue;
+        }
+        if (currentFile) {
+          if (line.startsWith('+') && !line.startsWith('+++')) {
+            currentFile.additions++;
+          } else if (line.startsWith('-') && !line.startsWith('---')) {
+            currentFile.deletions++;
+          }
+        }
+      }
+      if (currentFile) files.push(currentFile);
+      return files;
+    });
+
+    // ── API Helper ──────────────────────────────────────────────────
     const api = async (path, opts) => {
       const res = await fetch(path, opts);
       return res.json();
     };
 
-    // ── Markdown renderer (simple, no external deps) ───────────────────
+    // ── Markdown Renderer ───────────────────────────────────────────
     const renderMarkdown = (md) => {
-      if (!md) return '<span style="color: #8c8c8c; font-style: italic;">No PRD content.</span>';
+      if (!md) return '';
       let html = md
-        // Escape HTML
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        // Code blocks (```...```)
         .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-        // Inline code
         .replace(/`([^`]+)`/g, '<code>$1</code>')
-        // Headers
+        .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
         .replace(/^### (.+)$/gm, '<h3>$1</h3>')
         .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-        // Bold
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        // Italic
         .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-        // Unordered lists
         .replace(/^- (.+)$/gm, '<li>$1</li>')
-        // Ordered lists (simple)
         .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-        // Wrap consecutive <li> in <ul>
         .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
-        // Paragraphs (lines not already wrapped in tags)
         .replace(/^(?!<[huplo])((?!<).+)$/gm, '<p>$1</p>')
-        // Clean up empty lines
         .replace(/\n{2,}/g, '\n');
       return html;
     };
 
-    // ── Data loading ───────────────────────────────────────────────────
-    const loadRecentWorkspaces = async () => {
-      recentWorkspaces.value = await api('/api/workspaces/recent');
+    // ── Relative Time ───────────────────────────────────────────────
+    const relativeTime = (dateStr) => {
+      if (!dateStr) return '';
+      const d = dayjs(dateStr);
+      if (!d.isValid()) return '';
+      const now = dayjs();
+      const diffSec = now.diff(d, 'second');
+      if (diffSec < 10) return 'just now';
+      if (diffSec < 60) return diffSec + 's ago';
+      const diffMin = now.diff(d, 'minute');
+      if (diffMin < 60) return diffMin + 'm ago';
+      const diffHour = now.diff(d, 'hour');
+      if (diffHour < 24) return diffHour + 'h ago';
+      if (diffHour < 48) return 'yesterday';
+      return d.format('MMM D');
+    };
+
+    // ── Status Helpers ──────────────────────────────────────────────
+    const statusTagColor = (status) => ({
+      planning: 'processing',
+      review: 'orange',
+      executing: 'processing',
+      done: 'success',
+      failed: 'error',
+      rejected: 'default',
+    }[status] || 'default');
+
+    const statusLabel = (status) => ({
+      planning: 'Planning',
+      review: 'Review',
+      executing: 'Executing',
+      done: 'Done',
+      failed: 'Failed',
+      rejected: 'Rejected',
+    }[status] || status);
+
+    const projectName = (projectId) => {
+      const p = projects.value.find(x => x.id === projectId);
+      return p ? p.name : projectId || 'Unknown';
+    };
+
+    const diffLineClass = (line) => {
+      if (line.startsWith('@@')) return 'diff-line-hunk';
+      if (line.startsWith('+')) return 'diff-line-add';
+      if (line.startsWith('-')) return 'diff-line-del';
+      return 'diff-line-normal';
+    };
+
+    // ── Data Loading ────────────────────────────────────────────────
+    const loadProjects = async () => {
+      try {
+        const data = await api('/api/v2/projects');
+        if (Array.isArray(data)) {
+          projects.value = data;
+          // Auto-select if only one project
+          if (data.length === 1 && !newTaskProjectId.value) {
+            newTaskProjectId.value = data[0].id;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load projects:', e);
+      }
     };
 
     const loadTasks = async () => {
-      if (!workspace.value) return;
-      const data = await api(`/api/plan/tasks?workspace=${encodeURIComponent(workspace.value)}`);
-      if (Array.isArray(data)) {
-        tasks.value = data;
-        // Update selectedTask if it's open
-        if (selectedTask.value) {
-          const updated = data.find(t => t.id === selectedTask.value.id);
-          if (updated) selectedTask.value = updated;
-        }
-        // Track executing task
-        const exec = data.find(t => t.status === 'in_progress');
-        executingTaskId.value = exec ? exec.id : null;
-      }
-    };
-
-    const loadPlanStatus = async () => {
-      const data = await api('/api/plan/status');
-      return data;
-    };
-
-    const scrollActivity = () => {
-      if (activityEl.value) {
-        activityEl.value.scrollTop = activityEl.value.scrollHeight;
-      }
-    };
-
-    const activityIcon = (event) => ({
-      tool_use: '\u{1F527}',
-      text: '\u{1F4AC}',
-      result: '\u2705',
-      shell: '\u{1F4BB}',
-    }[event] || '\u{1F4A1}');
-
-    const addActivity = async (a) => {
-      activities.value.push(a);
-      if (activities.value.length > MAX_ACTIVITIES) {
-        activities.value = activities.value.slice(-MAX_ACTIVITIES);
-      }
-      await nextTick();
-      scrollActivity();
-    };
-
-    // ── Actions ────────────────────────────────────────────────────────
-    const pickFolder = async () => {
-      pickingFolder.value = true;
       try {
-        const res = await api('/api/pick-folder', { method: 'POST' });
-        if (res.path) workspace.value = res.path;
-      } catch {}
-      pickingFolder.value = false;
-    };
-
-    const generatePlan = async () => {
-      error.value = '';
-      planLoading.value = true;
-      planMessage.value = '';
-      try {
-        const res = await api('/api/plan/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ goal: goal.value, workspace: workspace.value }),
-        });
-        if (!res.ok) {
-          error.value = res.error || 'Failed to start planning';
-          planLoading.value = false;
-          return;
+        let url = '/api/v2/tasks';
+        const params = [];
+        if (selectedProjectId.value) {
+          params.push('project_id=' + encodeURIComponent(selectedProjectId.value));
         }
-        // Move to planning view
-        view.value = 'planning';
-        localStorage.setItem('ap_workspace', workspace.value);
-        localStorage.setItem('ap_goal', goal.value);
-        localStorage.setItem('ap_view', 'planning');
-
-        // Poll for plan completion
-        let planPollCount = 0;
-        const pollPlan = setInterval(async () => {
-          planPollCount++;
-          const status = await loadPlanStatus();
-          if (status.status === 'done') {
-            clearInterval(pollPlan);
-            planLoading.value = false;
-            await loadTasks();
-            view.value = 'dashboard';
-            localStorage.setItem('ap_view', 'dashboard');
-          } else if (status.status === 'error') {
-            clearInterval(pollPlan);
-            planLoading.value = false;
-            error.value = status.error || 'Planning failed';
-            view.value = 'landing';
-            localStorage.setItem('ap_view', 'landing');
-          } else if (status.status === 'idle' && planPollCount > 3) {
-            // Server may have restarted — check if tasks already exist
-            await loadTasks();
-            if (tasks.value.length > 0) {
-              clearInterval(pollPlan);
-              planLoading.value = false;
-              view.value = 'dashboard';
-              localStorage.setItem('ap_view', 'dashboard');
-            } else {
-              // No tasks and idle — planning was lost
-              clearInterval(pollPlan);
-              planLoading.value = false;
-              error.value = 'Planning session was interrupted. Please try again.';
-              view.value = 'landing';
-              localStorage.setItem('ap_view', 'landing');
-            }
-          } else {
-            planMessage.value = status.status === 'planning' ? 'Analyzing codebase and generating tasks...' : '';
+        if (params.length) url += '?' + params.join('&');
+        const data = await api(url);
+        if (Array.isArray(data)) {
+          tasks.value = data;
+          // Update open drawer tasks
+          if (planDrawerTask.value) {
+            const updated = data.find(t => t.id === planDrawerTask.value.id);
+            if (updated) planDrawerTask.value = updated;
           }
-        }, 1500);
+          if (diffDrawerTask.value) {
+            const updated = data.find(t => t.id === diffDrawerTask.value.id);
+            if (updated) diffDrawerTask.value = updated;
+          }
+          if (errorModalTask.value) {
+            const updated = data.find(t => t.id === errorModalTask.value.id);
+            if (updated) errorModalTask.value = updated;
+          }
+        }
       } catch (e) {
-        error.value = 'Network error: ' + e.message;
-        planLoading.value = false;
+        console.error('Failed to load tasks:', e);
       }
     };
 
-    const cancelPlanning = () => {
-      planLoading.value = false;
-      planMessage.value = '';
-      view.value = 'landing';
-      localStorage.setItem('ap_view', 'landing');
-    };
-
-    const executeTask = async (taskId) => {
-      executingTaskId.value = taskId;
-      activities.value = [];
-      const res = await api(`/api/plan/tasks/${taskId}/execute?workspace=${encodeURIComponent(workspace.value)}`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        antd.message.error(res.error || 'Failed to execute task');
-        executingTaskId.value = null;
-      }
-    };
-
-    const commitTask = (taskId) => {
-      const task = tasks.value.find(t => t.id === taskId);
-      if (task) {
-        openCommitModal(task);
-      }
-    };
-
-    const openCommitModal = (task) => {
-      commitTaskId.value = task.id;
-      commitMessage.value = `[${task.id}] feat: ${task.subject}`;
-      commitModalVisible.value = true;
-    };
-
-    const confirmCommit = async () => {
-      committing.value = true;
+    const loadSettings = async () => {
       try {
-        const res = await api(`/api/plan/tasks/${commitTaskId.value}/commit?workspace=${encodeURIComponent(workspace.value)}`, {
+        const data = await api('/api/v2/settings');
+        if (data) {
+          settingsData.value = {
+            scan_paths: data.scan_paths || '',
+            max_parallel_tasks: parseInt(data.max_parallel_tasks) || 3,
+          };
+        }
+      } catch (e) {
+        console.error('Failed to load settings:', e);
+      }
+    };
+
+    // ── Task Actions ────────────────────────────────────────────────
+    const createTask = async () => {
+      if (!newTaskTitle.value.trim() || !newTaskProjectId.value) return;
+      creating.value = true;
+      try {
+        const res = await api('/api/v2/tasks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: commitMessage.value }),
+          body: JSON.stringify({
+            project_id: newTaskProjectId.value,
+            title: newTaskTitle.value.trim(),
+          }),
         });
-        if (res.ok) {
-          antd.message.success(`Committed: ${res.commit_hash}`);
-          commitModalVisible.value = false;
+        if (res && res.id) {
+          newTaskTitle.value = '';
+          // Add immediately to list
+          tasks.value.unshift(res);
+          antd.message.success('Task created');
+        } else if (res?.error) {
+          antd.message.error(res.error);
+        }
+      } catch (e) {
+        antd.message.error('Failed to create task: ' + e.message);
+      } finally {
+        creating.value = false;
+      }
+    };
+
+    const approveTask = async (id) => {
+      if (!id) return;
+      try {
+        const res = await api(`/api/v2/tasks/${id}/approve`, { method: 'POST' });
+        if (res?.ok) {
+          antd.message.success('Task approved');
           await loadTasks();
         } else {
-          antd.message.error(res.error || 'Commit failed');
+          antd.message.error(res?.error || 'Failed to approve task');
         }
-      } finally {
-        committing.value = false;
+      } catch (e) {
+        antd.message.error('Failed to approve task: ' + e.message);
       }
     };
 
-    const editTask = async (taskId) => {
-      // Set task back to in_progress so user can work on it
-      await api(`/api/plan/tasks/${taskId}?workspace=${encodeURIComponent(workspace.value)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'pending' }),
-      });
-      await loadTasks();
-    };
-
-    const retryTask = async (taskId) => {
-      await executeTask(taskId);
-    };
-
-    const runTestForTask = async (taskId) => {
-      const res = await api(`/api/plan/tasks/${taskId}/test?workspace=${encodeURIComponent(workspace.value)}`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        antd.message.info(res.passed ? 'Tests passed!' : 'Tests failed.');
-        await loadTasks();
-      }
-    };
-
-    // PRD editing
-    const startEditPrd = () => {
-      editPrdContent.value = selectedTask.value?.prd || '';
-      editingPrd.value = true;
-    };
-
-    const savePrd = async () => {
-      if (!selectedTask.value) return;
-      await api(`/api/plan/tasks/${selectedTask.value.id}?workspace=${encodeURIComponent(workspace.value)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prd: editPrdContent.value }),
-      });
-      editingPrd.value = false;
-      await loadTasks();
-    };
-
-    const cancelEditPrd = () => {
-      editingPrd.value = false;
-    };
-
-    const resetToLanding = () => {
-      view.value = 'landing';
-      tasks.value = [];
-      selectedTask.value = null;
-      activities.value = [];
-      executingTaskId.value = null;
-      goal.value = '';
-      localStorage.removeItem('ap_view');
-      localStorage.removeItem('ap_goal');
-      loadRecentWorkspaces();
-    };
-
-    const selectTask = (task) => {
-      selectedTask.value = task;
-      editingPrd.value = false;
-    };
-
-    // ── Helpers ────────────────────────────────────────────────────────
-    const tasksByStatus = (status) => {
-      if (status === 'in_progress') {
-        // Include testing status in the in_progress column
-        return tasks.value.filter(t => t.status === 'in_progress' || t.status === 'testing');
-      }
-      return tasks.value.filter(t => t.status === status);
-    };
-
-    const statusColor = (status) => ({
-      pending: 'default',
-      in_progress: 'processing',
-      testing: 'warning',
-      completed: 'success',
-      failed: 'error',
-    }[status] || 'default');
-
-    const hasBlockingDeps = (task) => {
-      if (!task.dependencies?.length) return false;
-      const taskMap = {};
-      tasks.value.forEach(t => taskMap[t.id] = t);
-      return task.dependencies.some(depId => {
-        const dep = taskMap[depId];
-        return dep && dep.status !== 'completed';
-      });
-    };
-
-    const isDepCompleted = (depId) => {
-      const dep = tasks.value.find(t => t.id === depId);
-      return dep && dep.status === 'completed';
-    };
-
-    // ── Check for completion ───────────────────────────────────────────
-    const checkCompletion = () => {
-      if (tasks.value.length > 0) {
-        const allDone = tasks.value.every(t => t.status === 'completed' && t.committed);
-        if (allDone) {
-          view.value = 'done';
-          localStorage.setItem('ap_view', 'done');
-        }
-      }
-    };
-
-    // ── Polling ────────────────────────────────────────────────────────
-    let pollTimer = null;
-    const startPolling = () => {
-      pollTimer = setInterval(async () => {
-        if (view.value === 'dashboard' || view.value === 'done') {
+    const rejectTask = async (id) => {
+      if (!id) return;
+      try {
+        const res = await api(`/api/v2/tasks/${id}/reject`, { method: 'POST' });
+        if (res?.ok) {
+          antd.message.info('Task rejected');
           await loadTasks();
-          checkCompletion();
+        } else {
+          antd.message.error(res?.error || 'Failed to reject task');
         }
-      }, 2000);
+      } catch (e) {
+        antd.message.error('Failed to reject task: ' + e.message);
+      }
     };
 
-    // ── WebSocket for live streaming ──────────────────────────────────
+    const replanTask = async (id) => {
+      if (!id) return;
+      try {
+        const res = await api(`/api/v2/tasks/${id}/replan`, { method: 'POST' });
+        if (res?.ok) {
+          antd.message.info('Replanning task...');
+          await loadTasks();
+        } else {
+          antd.message.error(res?.error || 'Failed to replan task');
+        }
+      } catch (e) {
+        antd.message.error('Failed to replan task: ' + e.message);
+      }
+    };
+
+    const cancelTask = async (id) => {
+      if (!id) return;
+      try {
+        const res = await api(`/api/v2/tasks/${id}/cancel`, { method: 'POST' });
+        if (res?.ok) {
+          antd.message.info('Task cancelled');
+          await loadTasks();
+        } else {
+          antd.message.error(res?.error || 'Failed to cancel task');
+        }
+      } catch (e) {
+        antd.message.error('Failed to cancel task: ' + e.message);
+      }
+    };
+
+    const deleteTask = async (id) => {
+      if (!id) return;
+      try {
+        const res = await api(`/api/v2/tasks/${id}`, { method: 'DELETE' });
+        if (res?.ok) {
+          tasks.value = tasks.value.filter(t => t.id !== id);
+          antd.message.success('Task deleted');
+        } else {
+          antd.message.error(res?.error || 'Failed to delete task');
+        }
+      } catch (e) {
+        antd.message.error('Failed to delete task: ' + e.message);
+      }
+    };
+
+    const mergeTask = async (id) => {
+      if (!id) return;
+      try {
+        const res = await api(`/api/v2/tasks/${id}/merge`, { method: 'POST' });
+        if (res?.ok) {
+          antd.message.success('Task merged to main');
+          await loadTasks();
+        } else {
+          antd.message.error(res?.error || 'Failed to merge task');
+        }
+      } catch (e) {
+        antd.message.error('Failed to merge task: ' + e.message);
+      }
+    };
+
+    const loadDiff = async (id) => {
+      diffLoading.value = true;
+      diffData.value = { diff_stat: null, diff_content: '' };
+      try {
+        const data = await api(`/api/v2/tasks/${id}/diff`);
+        diffData.value = {
+          diff_stat: data.diff_stat || null,
+          diff_content: data.diff_content || '',
+        };
+      } catch (e) {
+        antd.message.error('Failed to load diff: ' + e.message);
+      } finally {
+        diffLoading.value = false;
+      }
+    };
+
+    // ── Drawer / Modal Openers ──────────────────────────────────────
+    const openPlanDrawer = (task) => {
+      planDrawerTask.value = task;
+      planDrawerVisible.value = true;
+    };
+
+    const openDiffDrawer = (task) => {
+      diffDrawerTask.value = task;
+      diffDrawerVisible.value = true;
+      loadDiff(task.id);
+    };
+
+    const openErrorModal = (task) => {
+      errorModalTask.value = task;
+      errorModalVisible.value = true;
+    };
+
+    const confirmDeleteTask = (task) => {
+      deleteModalTask.value = task;
+      deleteModalVisible.value = true;
+    };
+
+    const doDeleteTask = async () => {
+      if (deleteModalTask.value) {
+        await deleteTask(deleteModalTask.value.id);
+      }
+      deleteModalVisible.value = false;
+      deleteModalTask.value = null;
+    };
+
+    // ── Settings ────────────────────────────────────────────────────
+    const saveSettings = async () => {
+      savingSettings.value = true;
+      try {
+        const res = await api('/api/v2/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            settings: {
+              scan_paths: settingsData.value.scan_paths,
+              max_parallel_tasks: String(settingsData.value.max_parallel_tasks),
+            }
+          }),
+        });
+        if (res?.ok !== false) {
+          antd.message.success('Settings saved');
+          settingsVisible.value = false;
+        } else {
+          antd.message.error(res?.error || 'Failed to save settings');
+        }
+      } catch (e) {
+        antd.message.error('Failed to save settings: ' + e.message);
+      } finally {
+        savingSettings.value = false;
+      }
+    };
+
+    const scanProjects = async () => {
+      scanning.value = true;
+      try {
+        const res = await api('/api/v2/projects/scan', { method: 'POST' });
+        if (res?.ok) {
+          antd.message.success('Projects scanned: ' + (res.projects?.length || 0) + ' found');
+          await loadProjects();
+        } else {
+          antd.message.error(res?.error || 'Failed to scan projects');
+        }
+      } catch (e) {
+        antd.message.error('Failed to scan projects: ' + e.message);
+      } finally {
+        scanning.value = false;
+      }
+    };
+
+    const onProjectFilterChange = () => {
+      loadTasks();
+    };
+
+    // ── WebSocket ───────────────────────────────────────────────────
     let ws = null;
     let wsRetryTimer = null;
 
     const connectWs = () => {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${location.host}/ws`);
-      ws.onopen = () => {};
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+      };
+
       ws.onclose = () => {
+        console.log('WebSocket disconnected, retrying in 3s...');
         wsRetryTimer = setTimeout(connectWs, 3000);
       };
+
+      ws.onerror = () => {};
+
       ws.onmessage = async (e) => {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'ui_reload') {
-          localStorage.setItem('ap_view', view.value);
-          localStorage.setItem('ap_workspace', workspace.value);
-          localStorage.setItem('ap_goal', goal.value);
-          location.reload();
-          return;
-        }
-        // Plan events
-        if (msg.type === 'plan_progress') {
-          planMessage.value = msg.message || '';
-        }
-        if (msg.type === 'plan_complete') {
-          planLoading.value = false;
-          await loadTasks();
-          view.value = 'dashboard';
-          localStorage.setItem('ap_view', 'dashboard');
-        }
-        if (msg.type === 'plan_error') {
-          planLoading.value = false;
-          error.value = msg.message || 'Planning failed';
-          view.value = 'landing';
-          localStorage.setItem('ap_view', 'landing');
-        }
-        // Task events
-        if (msg.type === 'task_activity') {
-          addActivity(msg);
-        }
-        if (msg.type === 'task_status') {
-          await loadTasks();
-          if (msg.status === 'completed' || msg.status === 'failed') {
-            executingTaskId.value = null;
-          }
-        }
-        if (msg.type === 'task_test' || msg.type === 'task_test_done') {
-          await loadTasks();
-        }
-        // Legacy autopilot activity (backward compat)
-        if (msg.type === 'autopilot_activity') {
-          addActivity(msg);
-        }
-        if (msg.type === 'file_change') {
-          await loadTasks();
+        try {
+          const msg = JSON.parse(e.data);
+          handleWsEvent(msg);
+        } catch (err) {
+          console.error('WS parse error:', err);
         }
       };
     };
 
-    // ── Lifecycle ──────────────────────────────────────────────────────
-    onMounted(async () => {
-      const savedView = localStorage.getItem('ap_view');
-      const savedWorkspace = localStorage.getItem('ap_workspace');
-      const savedGoal = localStorage.getItem('ap_goal');
-
-      if (savedWorkspace) workspace.value = savedWorkspace;
-      if (savedGoal) goal.value = savedGoal;
-
-      await loadRecentWorkspaces();
-
-      if (savedView === 'dashboard' || savedView === 'done') {
-        view.value = savedView;
-        await loadTasks();
-        checkCompletion();
-      } else if (savedView === 'planning') {
-        // Check if planning is still in progress or already done
-        const status = await loadPlanStatus();
-        if (status.status === 'planning') {
-          view.value = 'planning';
-          // Re-start polling for completion
-          planLoading.value = true;
-          let planPollCount = 0;
-          const pollPlan = setInterval(async () => {
-            planPollCount++;
-            const s = await loadPlanStatus();
-            if (s.status === 'done') {
-              clearInterval(pollPlan);
-              planLoading.value = false;
-              await loadTasks();
-              view.value = 'dashboard';
-              localStorage.setItem('ap_view', 'dashboard');
-            } else if (s.status === 'error') {
-              clearInterval(pollPlan);
-              planLoading.value = false;
-              error.value = s.error || 'Planning failed';
-              view.value = 'landing';
-              localStorage.setItem('ap_view', 'landing');
-            } else if (s.status === 'idle' && planPollCount > 3) {
-              await loadTasks();
-              clearInterval(pollPlan);
-              planLoading.value = false;
-              if (tasks.value.length > 0) {
-                view.value = 'dashboard';
-                localStorage.setItem('ap_view', 'dashboard');
-              } else {
-                view.value = 'landing';
-                localStorage.setItem('ap_view', 'landing');
-              }
-            }
-          }, 1500);
-        } else {
-          // Status is done, idle, or error — check if tasks exist on disk
-          await loadTasks();
-          if (tasks.value.length > 0) {
-            view.value = 'dashboard';
-            localStorage.setItem('ap_view', 'dashboard');
-          } else {
-            view.value = 'landing';
-            localStorage.setItem('ap_view', 'landing');
+    const handleWsEvent = async (msg) => {
+      switch (msg.type) {
+        case 'task_created': {
+          // Add or update the task in local list
+          const existing = tasks.value.findIndex(t => t.id === msg.task?.id);
+          if (existing >= 0) {
+            tasks.value[existing] = msg.task;
+          } else if (msg.task) {
+            tasks.value.unshift(msg.task);
           }
+          break;
         }
-      }
 
+        case 'task_planning': {
+          updateTaskStatus(msg.task_id, 'planning');
+          break;
+        }
+
+        case 'task_plan_ready': {
+          const idx = tasks.value.findIndex(t => t.id === msg.task_id);
+          if (idx >= 0) {
+            tasks.value[idx] = { ...tasks.value[idx], status: 'review', plan: msg.plan };
+          }
+          antd.message.info('Plan ready for review: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
+          break;
+        }
+
+        case 'task_approved': {
+          updateTaskStatus(msg.task_id, 'executing');
+          break;
+        }
+
+        case 'task_executing': {
+          updateTaskStatus(msg.task_id, 'executing');
+          break;
+        }
+
+        case 'task_activity': {
+          // Store latest activity for the task
+          if (msg.task_id && msg.summary) {
+            taskActivities.value = {
+              ...taskActivities.value,
+              [msg.task_id]: (msg.tool ? '[' + msg.tool + '] ' : '') + msg.summary
+            };
+          }
+          break;
+        }
+
+        case 'task_done': {
+          updateTaskStatus(msg.task_id, 'done');
+          // Clear activity
+          delete taskActivities.value[msg.task_id];
+          antd.message.success('Task completed: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
+          break;
+        }
+
+        case 'task_failed': {
+          const idx = tasks.value.findIndex(t => t.id === msg.task_id);
+          if (idx >= 0) {
+            tasks.value[idx] = { ...tasks.value[idx], status: 'failed', error: msg.error };
+          }
+          // Clear activity
+          delete taskActivities.value[msg.task_id];
+          antd.message.error('Task failed: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
+          break;
+        }
+
+        case 'task_merged': {
+          updateTaskStatus(msg.task_id, 'merged');
+          antd.message.success('Task merged: ' + (tasks.value.find(t => t.id === msg.task_id)?.title || msg.task_id));
+          await loadTasks();
+          break;
+        }
+
+        default:
+          break;
+      }
+    };
+
+    const updateTaskStatus = (taskId, status) => {
+      const idx = tasks.value.findIndex(t => t.id === taskId);
+      if (idx >= 0) {
+        tasks.value[idx] = { ...tasks.value[idx], status };
+      }
+    };
+
+    // ── Polling Fallback ────────────────────────────────────────────
+    let pollTimer = null;
+    const startPolling = () => {
+      pollTimer = setInterval(async () => {
+        await loadTasks();
+      }, 5000);
+    };
+
+    // ── Lifecycle ───────────────────────────────────────────────────
+    onMounted(async () => {
+      await Promise.all([loadProjects(), loadTasks(), loadSettings()]);
       connectWs();
       startPolling();
     });
@@ -950,22 +1252,61 @@ const app = createApp({
     });
 
     return {
-      view, workspace, goal, error, recentWorkspaces,
-      tasks, selectedTask, executingTaskId,
-      pickingFolder, planLoading, planMessage,
-      activities, activityEl, outputActiveKey,
-      editingPrd, editPrdContent,
-      commitModalVisible, commitTaskId, commitMessage, committing,
-      columns, themeConfig,
-      pickFolder, generatePlan, cancelPlanning,
-      executeTask, commitTask, openCommitModal, confirmCommit,
-      editTask, retryTask, runTestForTask,
-      startEditPrd, savePrd, cancelEditPrd,
-      resetToLanding, selectTask,
-      tasksByStatus, statusColor, hasBlockingDeps, isDepCompleted,
-      activityIcon, renderMarkdown,
+      // State
+      projects, tasks, selectedProjectId,
+      newTaskTitle, newTaskProjectId, creating,
+      taskActivities,
+      planDrawerVisible, planDrawerTask,
+      diffDrawerVisible, diffDrawerTask, diffData, diffLoading,
+      settingsVisible, settingsData, savingSettings, scanning,
+      errorModalVisible, errorModalTask,
+      deleteModalVisible, deleteModalTask,
+      themeConfig,
+
+      // Computed
+      filteredTasks, parsedPlan,
+      diffLines, diffTruncated, diffTotalLines, diffFiles,
+
+      // Methods
+      createTask, approveTask, rejectTask, replanTask, cancelTask,
+      mergeTask, loadDiff,
+      openPlanDrawer, openDiffDrawer, openErrorModal,
+      confirmDeleteTask, doDeleteTask,
+      saveSettings, scanProjects,
+      onProjectFilterChange,
+      relativeTime, statusTagColor, statusLabel, projectName,
+      diffLineClass, renderMarkdown,
     };
   }
+});
+
+// Register icon components
+app.component('SettingOutlined', antd.SettingOutlined || {
+  template: `<span role="img" aria-label="setting" style="font-size: inherit;">&#9881;</span>`
+});
+app.component('EyeOutlined', antd.EyeOutlined || {
+  template: `<span role="img" aria-label="eye" style="font-size: inherit;">&#128065;</span>`
+});
+app.component('CheckCircleOutlined', antd.CheckCircleOutlined || {
+  template: `<span role="img" aria-label="check" style="font-size: inherit; color: inherit;">&#10004;</span>`
+});
+app.component('CloseCircleOutlined', antd.CloseCircleOutlined || {
+  template: `<span role="img" aria-label="close" style="font-size: inherit; color: inherit;">&#10006;</span>`
+});
+app.component('MinusCircleOutlined', antd.MinusCircleOutlined || {
+  template: `<span role="img" aria-label="minus" style="font-size: inherit; color: inherit;">&#8854;</span>`
+});
+app.component('ClockCircleOutlined', antd.ClockCircleOutlined || {
+  template: `<span role="img" aria-label="clock" style="font-size: inherit; color: inherit;">&#128339;</span>`
+});
+app.component('DeleteOutlined', antd.DeleteOutlined || {
+  template: `<span role="img" aria-label="delete" style="font-size: inherit;">&#128465;</span>`
+});
+app.component('InboxOutlined', antd.InboxOutlined || {
+  template: `<span role="img" aria-label="inbox" style="font-size: inherit;">&#128230;</span>`
+});
+app.component('ScanOutlined', antd.ScanOutlined || {
+  template: `<span role="img" aria-label="scan" style="font-size: inherit;">&#128269;</span>`
 });
 
 app.use(antd);

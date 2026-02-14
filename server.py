@@ -5,7 +5,9 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import signal
+import sqlite3
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -14,13 +16,103 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.requests import Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from watchfiles import awatch
 
 
+# ── SQLite Database ──────────────────────────────────────────────────────────
+DB_PATH: Path | None = None  # set in lifespan after AUTOPILOT_DIR is ensured
+
+def get_db() -> sqlite3.Connection:
+    """Return a sqlite3 connection (check_same_thread=False)."""
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+
+def init_db():
+    """Create tables if not exist."""
+    conn = get_db()
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            main_branch TEXT DEFAULT 'main',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            project_id TEXT REFERENCES projects(id),
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            status TEXT DEFAULT 'created'
+                CHECK(status IN ('created','planning','review','executing','done','failed','rejected')),
+            plan TEXT,
+            plan_raw TEXT,
+            execution_result TEXT,
+            worktree_path TEXT,
+            branch_name TEXT,
+            diff_stat TEXT,
+            diff_content TEXT,
+            error_message TEXT,
+            claude_pid INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            planned_at TEXT,
+            approved_at TEXT,
+            executed_at TEXT,
+            merged_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    """)
+    # Insert default settings if not present
+    defaults = {
+        "scan_paths": json.dumps([str(PROJECT_DIR.parent)]),
+        "max_parallel_tasks": "3",
+    }
+    for k, v in defaults.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v)
+        )
+    conn.commit()
+    conn.close()
+
+
+def _cleanup_orphan_processes():
+    """Check tasks with claude_pid set; if process dead, mark failed."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, claude_pid FROM tasks WHERE claude_pid IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        pid = row["claude_pid"]
+        if not _is_pid_alive(pid):
+            conn.execute(
+                "UPDATE tasks SET claude_pid = NULL, status = 'failed', "
+                "error_message = 'Process died unexpectedly', "
+                "updated_at = datetime('now') WHERE id = ?",
+                (row["id"],),
+            )
+    conn.commit()
+    conn.close()
+
+
 @asynccontextmanager
 async def lifespan(app):
+    global DB_PATH
+    AUTOPILOT_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH = AUTOPILOT_DIR / "autopilot.db"
+    init_db()
+    _cleanup_orphan_processes()
     task = asyncio.create_task(watch_files())
     asyncio.create_task(_reattach_autopilot())
     yield
@@ -57,6 +149,23 @@ plan_error: str = ""
 plan_pid: int | None = None
 task_processes: dict[str, int] = {}  # task_id → PID
 executing_task_id: str | None = None  # currently executing task (serial)
+
+# ── V2 parallel execution semaphore ─────────────────────────────────────────
+_v2_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_v2_semaphore() -> asyncio.Semaphore:
+    """Get or create the v2 execution semaphore based on settings."""
+    global _v2_semaphore
+    if _v2_semaphore is None:
+        conn = get_db()
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'max_parallel_tasks'"
+        ).fetchone()
+        conn.close()
+        limit = int(row["value"]) if row else 3
+        _v2_semaphore = asyncio.Semaphore(limit)
+    return _v2_semaphore
 
 
 # ── Task Store Helpers (PRD-driven review board) ────────────────────────────
@@ -1650,6 +1759,797 @@ async def api_self_test():
         yield f"data: {json.dumps({'done': True, 'returncode': proc.returncode})}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── V2 API Layer ─────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── V2 Pydantic Models ───────────────────────────────────────────────────────
+class V2CreateTaskRequest(BaseModel):
+    project_id: str
+    title: str
+    description: str = ""
+
+
+class V2UpdateTaskRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+
+
+class V2SettingsRequest(BaseModel):
+    settings: dict[str, str]
+
+
+# ── V2 DB helpers ────────────────────────────────────────────────────────────
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    """Convert a sqlite3.Row to a plain dict."""
+    return dict(row)
+
+
+def _db_get_task(task_id: str) -> dict | None:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row) if row else None
+
+
+def _db_get_project(project_id: str) -> dict | None:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row) if row else None
+
+
+def _db_update_task(task_id: str, **kwargs):
+    """Update arbitrary columns on a task row."""
+    if not kwargs:
+        return
+    kwargs["updated_at"] = datetime.utcnow().isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+    values = list(kwargs.values()) + [task_id]
+    conn = get_db()
+    conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+
+# ── V2 Project Scanner ──────────────────────────────────────────────────────
+
+def scan_for_projects(scan_paths: list[str], max_depth: int = 2) -> list[dict]:
+    """Find git repos by looking for .git directories up to max_depth levels."""
+    found = []
+    seen_paths: set[str] = set()
+    for base in scan_paths:
+        base_path = Path(base).expanduser().resolve()
+        if not base_path.is_dir():
+            continue
+        # BFS with depth tracking
+        queue: list[tuple[Path, int]] = [(base_path, 0)]
+        while queue:
+            current, depth = queue.pop(0)
+            if depth > max_depth:
+                continue
+            git_dir = current / ".git"
+            if git_dir.exists():
+                real_path = str(current)
+                if real_path not in seen_paths:
+                    seen_paths.add(real_path)
+                    found.append({
+                        "name": current.name,
+                        "path": real_path,
+                        "main_branch": detect_main_branch(real_path),
+                    })
+                continue  # Don't recurse into git repos
+            if depth < max_depth:
+                try:
+                    for child in sorted(current.iterdir()):
+                        if child.is_dir() and not child.name.startswith("."):
+                            queue.append((child, depth + 1))
+                except PermissionError:
+                    continue
+    return found
+
+
+def detect_main_branch(project_path: str) -> str:
+    """Detect the main branch of a git repo."""
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            capture_output=True, text=True, cwd=project_path, timeout=5,
+        )
+        if result.returncode == 0:
+            ref = result.stdout.strip()
+            # refs/remotes/origin/main → main
+            return ref.split("/")[-1]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    # Fallback: check if main or master exists
+    for branch in ["main", "master"]:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+                capture_output=True, text=True, cwd=project_path, timeout=5,
+            )
+            if result.returncode == 0:
+                return branch
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    return "main"
+
+
+# ── V2 Worktree Management ──────────────────────────────────────────────────
+
+async def _create_worktree(project_path: str, task_id: str) -> str:
+    """Create git worktree. Returns worktree path."""
+    worktree_dir = Path(project_path) / ".worktrees" / task_id
+    branch_name = f"task/{task_id}"
+    # Ensure .worktrees directory exists
+    worktree_dir.parent.mkdir(parents=True, exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(
+        "git", "worktree", "add", str(worktree_dir), "-b", branch_name,
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"Failed to create worktree: {stderr.decode(errors='replace')}")
+    return str(worktree_dir)
+
+
+async def _remove_worktree(project_path: str, task_id: str):
+    """Remove git worktree and branch."""
+    worktree_dir = Path(project_path) / ".worktrees" / task_id
+    branch_name = f"task/{task_id}"
+    proc = await asyncio.create_subprocess_exec(
+        "git", "worktree", "remove", str(worktree_dir), "--force",
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await proc.communicate()
+    proc2 = await asyncio.create_subprocess_exec(
+        "git", "branch", "-D", branch_name,
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await proc2.communicate()
+
+
+async def _get_diff(project_path: str, task_id: str, main_branch: str) -> tuple[dict, str]:
+    """Get diff between main and task branch. Returns (stat_dict, diff_text)."""
+    branch_name = f"task/{task_id}"
+    # numstat
+    proc = await asyncio.create_subprocess_exec(
+        "git", "diff", "--numstat", f"{main_branch}...{branch_name}",
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    numstat = stdout.decode()
+    files_changed = 0
+    total_ins = 0
+    total_del = 0
+    for line in numstat.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3:
+            files_changed += 1
+            try:
+                total_ins += int(parts[0])
+                total_del += int(parts[1])
+            except ValueError:
+                pass
+    stat = {"files_changed": files_changed, "total_insertions": total_ins, "total_deletions": total_del}
+
+    # full diff
+    proc2 = await asyncio.create_subprocess_exec(
+        "git", "diff", f"{main_branch}...{branch_name}",
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout2, _ = await proc2.communicate()
+    diff_text = stdout2.decode(errors="replace")
+
+    # Truncate if exceeds 500KB
+    max_diff_size = 500 * 1024
+    if len(diff_text) > max_diff_size:
+        diff_text = diff_text[:max_diff_size] + "\n\n... [diff truncated, exceeded 500KB] ..."
+
+    return stat, diff_text
+
+
+async def _merge_branch(project_path: str, task_id: str, main_branch: str, title: str) -> tuple[bool, str]:
+    """Merge task branch to main. Returns (success, message)."""
+    branch_name = f"task/{task_id}"
+    # checkout main
+    proc = await asyncio.create_subprocess_exec(
+        "git", "checkout", main_branch,
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    await proc.communicate()
+    if proc.returncode != 0:
+        return False, "Failed to checkout main branch"
+    # merge
+    proc2 = await asyncio.create_subprocess_exec(
+        "git", "merge", branch_name, "--no-ff", "-m", f"Merge {branch_name}: {title}",
+        cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc2.communicate()
+    if proc2.returncode != 0:
+        # abort merge
+        await asyncio.create_subprocess_exec(
+            "git", "merge", "--abort",
+            cwd=project_path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        return False, stderr.decode(errors="replace")
+    return True, stdout.decode(errors="replace")
+
+
+# ── V2 Planning Function ────────────────────────────────────────────────────
+
+async def _run_v2_planning(task_id: str):
+    """Run planning for a v2 task: explore codebase read-only and produce a JSON plan."""
+    task = _db_get_task(task_id)
+    if not task:
+        return
+    project = _db_get_project(task["project_id"])
+    if not project:
+        _db_update_task(task_id, status="failed", error_message="Project not found")
+        await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
+        return
+
+    project_path = project["path"]
+    await broadcast({"type": "task_planning", "task_id": task_id})
+
+    planning_prompt = f"""You are a technical project planner. Analyze the codebase at {project_path} for the following task.
+
+TASK TITLE: {task['title']}
+TASK DESCRIPTION: {task['description'] or 'No additional description.'}
+
+Your job is to explore the codebase (READ ONLY — do NOT modify any files) and produce a detailed implementation plan.
+
+OUTPUT FORMAT: Return ONLY a JSON object wrapped in ```json``` markers with this structure:
+```json
+{{
+  "summary": "one line summary of what needs to be done",
+  "files_to_modify": [
+    {{"path": "relative/path/to/file.py", "action": "modify", "description": "what changes are needed"}},
+    {{"path": "relative/path/to/new_file.py", "action": "create", "description": "what this file will contain"}}
+  ],
+  "approach": "detailed implementation plan in markdown...",
+  "risks": ["risk1", "risk2"]
+}}
+```
+
+RULES:
+- Explore the codebase structure first
+- List ALL files that need to be modified or created
+- action must be one of: "modify", "create", "delete"
+- Write a clear, step-by-step approach
+- Identify potential risks or edge cases
+- Do NOT write any code, only plan
+- Do NOT modify any files
+
+Return the JSON plan now:"""
+
+    try:
+        env = {**os.environ}
+        env.pop("CLAUDECODE", None)
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", planning_prompt,
+            "--max-turns", "3",
+            "--output-format", "text",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=project_path,
+            env=env,
+        )
+
+        stdout, stderr = await proc.communicate()
+        output = stdout.decode(errors="replace")
+
+        if proc.returncode != 0:
+            err_msg = stderr.decode(errors="replace")[:500] or "Planning process failed"
+            _db_update_task(task_id, status="failed", error_message=err_msg)
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": err_msg})
+            return
+
+        # Parse JSON from the output
+        plan_data = None
+        # Try ```json``` block first
+        json_match = re.search(r"```json\s*\n(.*?)```", output, re.DOTALL)
+        if json_match:
+            try:
+                plan_data = json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try raw JSON object
+        if not plan_data:
+            obj_match = re.search(r"\{[\s\S]*\"summary\"[\s\S]*\}", output)
+            if obj_match:
+                try:
+                    plan_data = json.loads(obj_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+
+        if not plan_data:
+            _db_update_task(
+                task_id,
+                status="failed",
+                plan_raw=output,
+                error_message="Failed to parse planning output as JSON",
+            )
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Failed to parse plan"})
+            return
+
+        _db_update_task(
+            task_id,
+            status="review",
+            plan=json.dumps(plan_data, ensure_ascii=False),
+            plan_raw=output,
+            planned_at=datetime.utcnow().isoformat(),
+        )
+        await broadcast({"type": "task_plan_ready", "task_id": task_id, "plan": plan_data})
+
+    except Exception as e:
+        _db_update_task(task_id, status="failed", error_message=str(e))
+        await broadcast({"type": "task_failed", "task_id": task_id, "error": str(e)})
+
+
+# ── V2 Execution Function ───────────────────────────────────────────────────
+
+_V2_EXECUTION_TIMEOUT = 30 * 60  # 30 minutes
+
+
+async def _run_v2_execution(task_id: str):
+    """Execute a v2 task in a git worktree using claude -p."""
+    sem = _get_v2_semaphore()
+    async with sem:
+        task = _db_get_task(task_id)
+        if not task:
+            return
+        project = _db_get_project(task["project_id"])
+        if not project:
+            _db_update_task(task_id, status="failed", error_message="Project not found")
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Project not found"})
+            return
+
+        project_path = project["path"]
+        main_branch = project["main_branch"] or "main"
+
+        await broadcast({"type": "task_executing", "task_id": task_id})
+
+        try:
+            # Create worktree
+            worktree_path = await _create_worktree(project_path, task_id)
+            branch_name = f"task/{task_id}"
+            _db_update_task(task_id, worktree_path=worktree_path, branch_name=branch_name)
+
+            # Parse plan for context
+            plan_text = ""
+            if task["plan"]:
+                try:
+                    plan_data = json.loads(task["plan"])
+                    plan_text = f"""
+PLAN SUMMARY: {plan_data.get('summary', '')}
+
+APPROACH:
+{plan_data.get('approach', '')}
+
+FILES TO MODIFY:
+{json.dumps(plan_data.get('files_to_modify', []), indent=2)}
+"""
+                except json.JSONDecodeError:
+                    plan_text = task["plan"]
+
+            execution_prompt = f"""You are a software engineer. Implement the following task in the workspace at {worktree_path}.
+
+TASK: {task['title']}
+DESCRIPTION: {task['description'] or 'No additional description.'}
+
+{plan_text}
+
+RULES:
+- Implement the task according to the plan
+- Write clean, production-quality code
+- Follow existing code patterns and conventions
+- Commit your changes with a descriptive message
+- Do NOT modify unrelated files
+
+Begin implementation:"""
+
+            env = {**os.environ}
+            env.pop("CLAUDECODE", None)
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "-p", execution_prompt,
+                "--max-turns", "100",
+                "--output-format", "stream-json",
+                "--dangerously-skip-permissions",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=worktree_path,
+                env=env,
+            )
+            _db_update_task(task_id, claude_pid=proc.pid)
+
+            # Stream output with timeout
+            try:
+                async def _stream_output():
+                    async for line in proc.stdout:
+                        decoded = line.decode(errors="replace").strip()
+                        if not decoded:
+                            continue
+                        activity = _parse_stream_event(decoded)
+                        if activity:
+                            activity["timestamp"] = datetime.now().strftime("%H:%M:%S")
+                            activity["task_id"] = task_id
+                            await broadcast({"type": "task_activity", **activity})
+
+                await asyncio.wait_for(_stream_output(), timeout=_V2_EXECUTION_TIMEOUT)
+                await proc.wait()
+            except asyncio.TimeoutError:
+                # Kill the process on timeout
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+                _db_update_task(
+                    task_id,
+                    status="failed",
+                    claude_pid=None,
+                    error_message=f"Execution timed out after {_V2_EXECUTION_TIMEOUT // 60} minutes",
+                )
+                await broadcast({"type": "task_failed", "task_id": task_id, "error": "Execution timed out"})
+                return
+
+            _db_update_task(task_id, claude_pid=None)
+
+            # Generate diff
+            stat, diff_text = await _get_diff(project_path, task_id, main_branch)
+
+            _db_update_task(
+                task_id,
+                status="done",
+                diff_stat=json.dumps(stat),
+                diff_content=diff_text,
+                executed_at=datetime.utcnow().isoformat(),
+            )
+            await broadcast({"type": "task_done", "task_id": task_id, "diff_stat": stat})
+
+        except Exception as e:
+            _db_update_task(
+                task_id,
+                status="failed",
+                claude_pid=None,
+                error_message=str(e),
+            )
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": str(e)})
+
+
+# ── V2 Settings API ─────────────────────────────────────────────────────────
+
+@app.get("/api/v2/settings")
+async def api_v2_settings():
+    """Return all settings as a dict."""
+    conn = get_db()
+    rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    conn.close()
+    return {row["key"]: row["value"] for row in rows}
+
+
+@app.put("/api/v2/settings")
+async def api_v2_settings_update(req: V2SettingsRequest):
+    """Upsert settings."""
+    global _v2_semaphore
+    conn = get_db()
+    for k, v in req.settings.items():
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (k, v),
+        )
+    conn.commit()
+    conn.close()
+    # Reset semaphore if max_parallel_tasks changed
+    if "max_parallel_tasks" in req.settings:
+        _v2_semaphore = None
+    return {"ok": True}
+
+
+# ── V2 Projects API ─────────────────────────────────────────────────────────
+
+@app.get("/api/v2/projects")
+async def api_v2_projects():
+    """List all projects from DB."""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
+
+
+@app.post("/api/v2/projects/scan")
+async def api_v2_projects_scan():
+    """Scan for projects and upsert into DB."""
+    conn = get_db()
+    # Get scan paths from settings
+    row = conn.execute("SELECT value FROM settings WHERE key = 'scan_paths'").fetchone()
+    conn.close()
+    scan_paths = [str(PROJECT_DIR.parent)]
+    if row:
+        try:
+            scan_paths = json.loads(row["value"])
+        except json.JSONDecodeError:
+            pass
+
+    projects = scan_for_projects(scan_paths)
+
+    conn = get_db()
+    for p in projects:
+        pid = "p-" + secrets.token_hex(4)
+        conn.execute(
+            "INSERT INTO projects (id, name, path, main_branch) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET name = excluded.name, main_branch = excluded.main_branch",
+            (pid, p["name"], p["path"], p["main_branch"]),
+        )
+    conn.commit()
+    # Return updated list
+    rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    conn.close()
+    return {"ok": True, "projects": [_row_to_dict(r) for r in rows]}
+
+
+# ── V2 Task API ─────────────────────────────────────────────────────────────
+
+@app.post("/api/v2/tasks")
+async def api_v2_task_create(req: V2CreateTaskRequest):
+    """Create a new v2 task and immediately launch background planning."""
+    # Validate project exists
+    project = _db_get_project(req.project_id)
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+    task_id = "t-" + secrets.token_hex(4)
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO tasks (id, project_id, title, description, status) "
+        "VALUES (?, ?, ?, ?, 'planning')",
+        (task_id, req.project_id, req.title, req.description),
+    )
+    conn.commit()
+    conn.close()
+
+    task = _db_get_task(task_id)
+    await broadcast({"type": "task_created", "task": task})
+
+    # Launch planning in background
+    asyncio.create_task(_run_v2_planning(task_id))
+
+    return task
+
+
+@app.get("/api/v2/tasks")
+async def api_v2_task_list(project_id: str | None = None, status: str | None = None):
+    """List v2 tasks with optional filters."""
+    conn = get_db()
+    query = "SELECT * FROM tasks WHERE 1=1"
+    params: list = []
+    if project_id:
+        query += " AND project_id = ?"
+        params.append(project_id)
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
+
+
+@app.get("/api/v2/tasks/{task_id}")
+async def api_v2_task_detail(task_id: str):
+    """Get a single v2 task."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    return task
+
+
+@app.put("/api/v2/tasks/{task_id}")
+async def api_v2_task_update(task_id: str, req: V2UpdateTaskRequest):
+    """Update title/description of a v2 task."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    updates = {}
+    if req.title is not None:
+        updates["title"] = req.title
+    if req.description is not None:
+        updates["description"] = req.description
+    if updates:
+        _db_update_task(task_id, **updates)
+    return _db_get_task(task_id)
+
+
+@app.delete("/api/v2/tasks/{task_id}")
+async def api_v2_task_delete(task_id: str):
+    """Delete a v2 task. Clean up worktree and kill process if needed."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    # Kill claude process if running
+    if task["claude_pid"] and _is_pid_alive(task["claude_pid"]):
+        try:
+            os.kill(task["claude_pid"], signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
+    # Remove worktree if exists
+    if task["worktree_path"] and Path(task["worktree_path"]).exists():
+        project = _db_get_project(task["project_id"])
+        if project:
+            try:
+                await _remove_worktree(project["path"], task_id)
+            except Exception:
+                pass
+
+    conn = get_db()
+    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.post("/api/v2/tasks/{task_id}/approve")
+async def api_v2_task_approve(task_id: str):
+    """Approve plan, create worktree, start execution."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    if task["status"] not in ("review", "failed"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Cannot approve task in status '{task['status']}'"},
+        )
+
+    _db_update_task(
+        task_id,
+        status="executing",
+        approved_at=datetime.utcnow().isoformat(),
+    )
+
+    await broadcast({"type": "task_approved", "task_id": task_id})
+
+    # Launch execution in background
+    asyncio.create_task(_run_v2_execution(task_id))
+
+    return {"ok": True, "task": _db_get_task(task_id)}
+
+
+@app.post("/api/v2/tasks/{task_id}/reject")
+async def api_v2_task_reject(task_id: str):
+    """Reject a task's plan."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    _db_update_task(task_id, status="rejected")
+    return {"ok": True, "task": _db_get_task(task_id)}
+
+
+@app.post("/api/v2/tasks/{task_id}/replan")
+async def api_v2_task_replan(task_id: str):
+    """Reset task to planning and re-run the planner."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    _db_update_task(
+        task_id,
+        status="planning",
+        plan=None,
+        plan_raw=None,
+        planned_at=None,
+        error_message=None,
+    )
+
+    asyncio.create_task(_run_v2_planning(task_id))
+    return {"ok": True, "task": _db_get_task(task_id)}
+
+
+@app.post("/api/v2/tasks/{task_id}/cancel")
+async def api_v2_task_cancel(task_id: str):
+    """Cancel a task: kill process, remove worktree, set failed."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    # Kill claude process if running
+    if task["claude_pid"] and _is_pid_alive(task["claude_pid"]):
+        try:
+            os.kill(task["claude_pid"], signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+
+    # Remove worktree if exists
+    if task["worktree_path"] and Path(task["worktree_path"]).exists():
+        project = _db_get_project(task["project_id"])
+        if project:
+            try:
+                await _remove_worktree(project["path"], task_id)
+            except Exception:
+                pass
+
+    _db_update_task(
+        task_id,
+        status="failed",
+        claude_pid=None,
+        error_message="Cancelled by user",
+    )
+    return {"ok": True, "task": _db_get_task(task_id)}
+
+
+@app.get("/api/v2/tasks/{task_id}/diff")
+async def api_v2_task_diff(task_id: str):
+    """Return diff_stat and diff_content for a task."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+
+    diff_stat = None
+    if task["diff_stat"]:
+        try:
+            diff_stat = json.loads(task["diff_stat"])
+        except json.JSONDecodeError:
+            diff_stat = task["diff_stat"]
+
+    return {
+        "task_id": task_id,
+        "diff_stat": diff_stat,
+        "diff_content": task["diff_content"],
+    }
+
+
+@app.post("/api/v2/tasks/{task_id}/merge")
+async def api_v2_task_merge(task_id: str):
+    """Merge task branch to main, clean up worktree."""
+    task = _db_get_task(task_id)
+    if not task:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    if task["status"] != "done":
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Cannot merge task in status '{task['status']}'. Must be 'done'."},
+        )
+
+    project = _db_get_project(task["project_id"])
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "Project not found"})
+
+    main_branch = project["main_branch"] or "main"
+
+    success, message = await _merge_branch(
+        project["path"], task_id, main_branch, task["title"]
+    )
+
+    if not success:
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": f"Merge failed: {message}"},
+        )
+
+    # Clean up worktree
+    try:
+        await _remove_worktree(project["path"], task_id)
+    except Exception:
+        pass
+
+    _db_update_task(
+        task_id,
+        merged_at=datetime.utcnow().isoformat(),
+        worktree_path=None,
+    )
+
+    await broadcast({"type": "task_merged", "task_id": task_id})
+
+    return {"ok": True, "message": message, "task": _db_get_task(task_id)}
 
 
 # ── WebSocket ────────────────────────────────────────────────────────────────

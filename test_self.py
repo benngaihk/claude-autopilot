@@ -24,7 +24,7 @@ def test_index_page(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "Claude Autopilot" in r.text
+    assert "Claude Batch Planner" in r.text
 
 
 def test_api_sessions(client):
@@ -376,3 +376,174 @@ def test_websocket_connection():
     with ws_client.connect(f"ws://localhost:8000/ws") as ws:
         # Connection succeeded if we get here
         ws.close()
+
+
+# ── V2 API Tests (Batch Planner) ─────────────────────────────────────────────
+
+def test_v2_settings_read(client):
+    """GET /api/v2/settings should return a dict with default settings."""
+    r = client.get("/api/v2/settings")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, dict)
+    assert "max_parallel_tasks" in data
+
+
+def test_v2_settings_write(client):
+    """PUT /api/v2/settings should upsert settings."""
+    r = client.put("/api/v2/settings", json={"settings": {"max_parallel_tasks": "5"}})
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("ok") is True
+    # Verify
+    r2 = client.get("/api/v2/settings")
+    assert r2.json()["max_parallel_tasks"] == "5"
+    # Restore default
+    client.put("/api/v2/settings", json={"settings": {"max_parallel_tasks": "3"}})
+
+
+def test_v2_projects_list(client):
+    """GET /api/v2/projects should return a list."""
+    r = client.get("/api/v2/projects")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+
+
+def test_v2_projects_scan(client):
+    """POST /api/v2/projects/scan should return ok with projects list."""
+    r = client.post("/api/v2/projects/scan")
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("ok") is True
+    assert "projects" in data
+    assert isinstance(data["projects"], list)
+
+
+def test_v2_tasks_list(client):
+    """GET /api/v2/tasks should return a list."""
+    r = client.get("/api/v2/tasks")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, list)
+
+
+def test_v2_task_not_found(client):
+    """GET /api/v2/tasks/{id} should return 404 for nonexistent task."""
+    r = client.get("/api/v2/tasks/t-nonexistent")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_approve_not_found(client):
+    """POST /api/v2/tasks/{id}/approve should return 404 for nonexistent task."""
+    r = client.post("/api/v2/tasks/t-nonexistent/approve")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_reject_not_found(client):
+    """POST /api/v2/tasks/{id}/reject should return 404 for nonexistent task."""
+    r = client.post("/api/v2/tasks/t-nonexistent/reject")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_replan_not_found(client):
+    """POST /api/v2/tasks/{id}/replan should return 404 for nonexistent task."""
+    r = client.post("/api/v2/tasks/t-nonexistent/replan")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_cancel_not_found(client):
+    """POST /api/v2/tasks/{id}/cancel should return 404 for nonexistent task."""
+    r = client.post("/api/v2/tasks/t-nonexistent/cancel")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_diff_not_found(client):
+    """GET /api/v2/tasks/{id}/diff should return 404 for nonexistent task."""
+    r = client.get("/api/v2/tasks/t-nonexistent/diff")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_merge_not_found(client):
+    """POST /api/v2/tasks/{id}/merge should return 404 for nonexistent task."""
+    r = client.post("/api/v2/tasks/t-nonexistent/merge")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_delete_not_found(client):
+    """DELETE /api/v2/tasks/{id} should return 404 for nonexistent task."""
+    r = client.delete("/api/v2/tasks/t-nonexistent")
+    assert r.status_code == 404
+    data = r.json()
+    assert "error" in data
+
+
+def test_v2_task_lifecycle(client):
+    """Test v2 task creation (without Claude, just DB operations)."""
+    # First ensure we have at least one project
+    client.post("/api/v2/projects/scan")
+    projects = client.get("/api/v2/projects").json()
+    if not projects:
+        # Skip if no projects available
+        return
+
+    project_id = projects[0]["id"]
+
+    # Create task (will start planning which will fail without claude, but DB entry is created)
+    r = client.post("/api/v2/tasks", json={
+        "project_id": project_id,
+        "title": "Test task from self-test",
+        "description": "This is a test task.",
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert "id" in data
+    task_id = data["id"]
+    assert task_id.startswith("t-")
+    assert data["title"] == "Test task from self-test"
+
+    # List tasks — should include our task
+    r = client.get("/api/v2/tasks")
+    assert r.status_code == 200
+    task_ids = [t["id"] for t in r.json()]
+    assert task_id in task_ids
+
+    # Filter by project_id
+    r = client.get(f"/api/v2/tasks?project_id={project_id}")
+    assert r.status_code == 200
+    task_ids = [t["id"] for t in r.json()]
+    assert task_id in task_ids
+
+    # Get single task
+    r = client.get(f"/api/v2/tasks/{task_id}")
+    assert r.status_code == 200
+    assert r.json()["title"] == "Test task from self-test"
+
+    # Update task
+    r = client.put(f"/api/v2/tasks/{task_id}", json={"title": "Updated test task"})
+    assert r.status_code == 200
+    r2 = client.get(f"/api/v2/tasks/{task_id}")
+    assert r2.json()["title"] == "Updated test task"
+
+    # Delete task
+    r = client.delete(f"/api/v2/tasks/{task_id}")
+    assert r.status_code == 200
+    assert r.json().get("ok") is True
+
+    # Verify deletion
+    r = client.get(f"/api/v2/tasks/{task_id}")
+    assert r.status_code == 404
