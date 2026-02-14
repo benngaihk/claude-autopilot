@@ -2008,8 +2008,8 @@ async def _merge_branch(project_path: str, task_id: str, main_branch: str, title
 
 # ── V2 Planning Function ────────────────────────────────────────────────────
 
-async def _run_v2_planning(task_id: str):
-    """Run planning for a v2 task: explore codebase read-only and produce a JSON plan."""
+async def _run_v2_planning(task_id: str, feedback: str | None = None):
+    """Run planning for a v2 task: explore codebase read-only and produce a markdown plan."""
     task = _db_get_task(task_id)
     if not task:
         return
@@ -2027,7 +2027,31 @@ async def _run_v2_planning(task_id: str):
 
     await broadcast({"type": "task_planning", "task_id": task_id})
 
-    planning_prompt = f"""You are a task planner. Explore the workspace and create an execution plan.
+    # Build prompt — include previous plan + feedback for revisions
+    previous_plan = task.get("plan_raw") or task.get("plan") or ""
+    if feedback and previous_plan:
+        planning_prompt = f"""You are a task planner. You previously created a plan, but the user has feedback.
+
+TASK: {task['title']}
+{('DESCRIPTION: ' + task['description']) if task['description'] else ''}
+
+YOUR PREVIOUS PLAN:
+{previous_plan}
+
+USER FEEDBACK:
+{feedback}
+
+Revise the plan based on the user's feedback. If the user chose a specific approach, adopt it. If they want changes, incorporate them.
+
+Output a revised markdown plan with:
+1. **Summary** — one paragraph overview
+2. **Files involved** — list of files to modify/create/delete
+3. **Steps** — numbered implementation steps
+4. **Risks** — potential issues (optional)
+
+Keep it concise but informative. Do NOT write any code — only describe the plan."""
+    else:
+        planning_prompt = f"""You are a task planner. Explore the workspace and create an execution plan.
 
 TASK: {task['title']}
 {('DESCRIPTION: ' + task['description']) if task['description'] else ''}
@@ -2454,9 +2478,13 @@ async def api_v2_task_reject(task_id: str):
     return {"ok": True, "task": _db_get_task(task_id)}
 
 
+class V2ReplanRequest(BaseModel):
+    feedback: str | None = None
+
+
 @app.post("/api/v2/tasks/{task_id}/replan")
-async def api_v2_task_replan(task_id: str):
-    """Reset task to planning and re-run the planner."""
+async def api_v2_task_replan(task_id: str, body: V2ReplanRequest = V2ReplanRequest()):
+    """Reset task to planning and re-run the planner, optionally with user feedback."""
     task = _db_get_task(task_id)
     if not task:
         return JSONResponse(status_code=404, content={"error": "Task not found"})
@@ -2464,13 +2492,11 @@ async def api_v2_task_replan(task_id: str):
     _db_update_task(
         task_id,
         status="planning",
-        plan=None,
-        plan_raw=None,
         planned_at=None,
         error_message=None,
     )
 
-    asyncio.create_task(_run_v2_planning(task_id))
+    asyncio.create_task(_run_v2_planning(task_id, feedback=body.feedback))
     return {"ok": True, "task": _db_get_task(task_id)}
 
 

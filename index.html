@@ -394,11 +394,26 @@
       </template>
 
       <template #footer>
-        <div style="display: flex; justify-content: flex-end; gap: 8px;">
-          <a-button @click="planDrawerVisible = false; replanTask(planDrawerTask?.id)">Replan</a-button>
-          <a-button danger @click="planDrawerVisible = false; rejectTask(planDrawerTask?.id)">Reject</a-button>
-          <a-button type="primary" style="background: #52c41a; border-color: #52c41a;"
-                    @click="planDrawerVisible = false; approveTask(planDrawerTask?.id)">Approve</a-button>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; gap: 8px;">
+            <a-input
+              v-model:value="planFeedback"
+              placeholder="Write feedback or pick an approach..."
+              allow-clear
+              style="flex: 1;"
+              @pressEnter="if (planFeedback.trim()) { planDrawerVisible = false; replanTask(planDrawerTask?.id, planFeedback); planFeedback = ''; }"
+            ></a-input>
+            <a-button
+              :disabled="!planFeedback.trim()"
+              @click="planDrawerVisible = false; replanTask(planDrawerTask?.id, planFeedback); planFeedback = '';"
+            >Revise</a-button>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 8px;">
+            <a-button @click="planDrawerVisible = false; replanTask(planDrawerTask?.id)">Replan</a-button>
+            <a-button danger @click="planDrawerVisible = false; rejectTask(planDrawerTask?.id)">Reject</a-button>
+            <a-button type="primary" style="background: #52c41a; border-color: #52c41a;"
+                      @click="planDrawerVisible = false; approveTask(planDrawerTask?.id)">Approve</a-button>
+          </div>
         </div>
       </template>
     </a-drawer>
@@ -568,6 +583,7 @@ const app = createApp({
     // Plan Drawer
     const planDrawerVisible = ref(false);
     const planDrawerTask = ref(null);
+    const planFeedback = ref('');
 
     // Diff Drawer
     const diffDrawerVisible = ref(false);
@@ -874,12 +890,17 @@ const app = createApp({
       }
     };
 
-    const replanTask = async (id) => {
+    const replanTask = async (id, feedback) => {
       if (!id) return;
       try {
-        const res = await api(`/api/v2/tasks/${id}/replan`, { method: 'POST' });
+        const body = feedback ? { feedback } : {};
+        const res = await api(`/api/v2/tasks/${id}/replan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
         if (res?.ok) {
-          antd.message.info('Replanning task...');
+          antd.message.info(feedback ? 'Revising plan with feedback...' : 'Replanning task...');
           await loadTasks();
         } else {
           antd.message.error(res?.error || 'Failed to replan task');
@@ -1168,7 +1189,7 @@ const app = createApp({
       projects, tasks, selectedProjectId,
       newTaskTitle, newTaskProjectId, creating,
       taskActivities,
-      planDrawerVisible, planDrawerTask,
+      planDrawerVisible, planDrawerTask, planFeedback,
       diffDrawerVisible, diffDrawerTask, diffData, diffLoading,
       settingsVisible, settingsData, savingSettings, scanning,
       errorModalVisible, errorModalTask,
