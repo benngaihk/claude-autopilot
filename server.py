@@ -2293,6 +2293,12 @@ async def api_v2_projects_scan():
 
     conn = get_db()
     try:
+        # Remove projects no longer in scan paths, then upsert current ones
+        scanned_paths = {p["path"] for p in projects}
+        existing = conn.execute("SELECT id, path FROM projects").fetchall()
+        for row in existing:
+            if row["path"] not in scanned_paths:
+                conn.execute("DELETE FROM projects WHERE id = ?", (row["id"],))
         for p in projects:
             pid = "p-" + secrets.token_hex(4)
             conn.execute(
