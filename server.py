@@ -2136,7 +2136,7 @@ Keep it concise but informative. Do NOT write any code — only describe the pla
         env.pop("CLAUDECODE", None)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", planning_prompt,
-            "--max-turns", "10",
+            "--max-turns", "30",
             "--output-format", "text",
             "--disallowedTools", "Edit", "Write", "NotebookEdit",
             stdout=asyncio.subprocess.PIPE,
@@ -2154,13 +2154,11 @@ Keep it concise but informative. Do NOT write any code — only describe the pla
             await broadcast({"type": "task_failed", "task_id": task_id, "error": err_msg})
             return
 
-        if not output:
-            _db_update_task(
-                task_id,
-                status="failed",
-                error_message="Planning produced no output",
-            )
-            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Planning produced no output"})
+        # Detect max-turns error or empty output
+        if not output or output.startswith("Error:"):
+            err_msg = output or "Planning produced no output"
+            _db_update_task(task_id, status="failed", error_message=err_msg)
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": err_msg})
             return
 
         # Quick review scan: use a fast model to extract choices needing user input
