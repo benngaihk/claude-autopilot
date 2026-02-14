@@ -272,7 +272,7 @@
           <a-select-option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</a-select-option>
         </a-select>
         <a-button @click="settingsVisible = true" shape="circle">
-          <template #icon><SettingOutlined /></template>
+          <template #icon><SettingOutlined></SettingOutlined></template>
         </a-button>
       </div>
     </div>
@@ -311,7 +311,7 @@
       <!-- Task List -->
       <div v-if="filteredTasks.length === 0" class="empty-state">
         <div class="empty-state-icon">
-          <InboxOutlined />
+          <InboxOutlined></InboxOutlined>
         </div>
         <a-typography-text type="secondary" style="font-size: 14px;">No tasks yet. Create one above to get started.</a-typography-text>
       </div>
@@ -321,12 +321,12 @@
           <div class="task-card-body">
             <!-- Status Icon -->
             <div class="task-card-left">
-              <a-spin v-if="task.status === 'planning' || task.status === 'executing'" size="small" />
-              <EyeOutlined v-else-if="task.status === 'review'" style="font-size: 18px; color: #fa8c16;" />
-              <CheckCircleOutlined v-else-if="task.status === 'done'" style="font-size: 18px; color: #52c41a;" />
-              <CloseCircleOutlined v-else-if="task.status === 'failed'" style="font-size: 18px; color: #ff4d4f;" />
-              <MinusCircleOutlined v-else-if="task.status === 'rejected'" style="font-size: 18px; color: #8c8c8c;" />
-              <ClockCircleOutlined v-else style="font-size: 18px; color: #8c8c8c;" />
+              <a-spin v-if="task.status === 'planning' || task.status === 'executing'" size="small"></a-spin>
+              <EyeOutlined v-else-if="task.status === 'review'" style="font-size: 18px; color: #fa8c16;"></EyeOutlined>
+              <CheckCircleOutlined v-else-if="task.status === 'done'" style="font-size: 18px; color: #52c41a;"></CheckCircleOutlined>
+              <CloseCircleOutlined v-else-if="task.status === 'failed'" style="font-size: 18px; color: #ff4d4f;"></CloseCircleOutlined>
+              <MinusCircleOutlined v-else-if="task.status === 'rejected'" style="font-size: 18px; color: #8c8c8c;"></MinusCircleOutlined>
+              <ClockCircleOutlined v-else style="font-size: 18px; color: #8c8c8c;"></ClockCircleOutlined>
             </div>
 
             <!-- Title + Meta -->
@@ -369,7 +369,7 @@
                 <a-button size="small" @click.stop="openDiffDrawer(task)">View Diff</a-button>
                 <a-button size="small" type="primary" @click.stop="mergeTask(task.id)">Merge</a-button>
                 <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
-                  <template #icon><DeleteOutlined /></template>
+                  <template #icon><DeleteOutlined></DeleteOutlined></template>
                 </a-button>
               </template>
 
@@ -378,7 +378,7 @@
                 <a-button size="small" @click.stop="openErrorModal(task)">View Error</a-button>
                 <a-button size="small" type="primary" @click.stop="replanTask(task.id)">Retry</a-button>
                 <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
-                  <template #icon><DeleteOutlined /></template>
+                  <template #icon><DeleteOutlined></DeleteOutlined></template>
                 </a-button>
               </template>
 
@@ -386,7 +386,7 @@
               <template v-if="task.status === 'rejected'">
                 <a-button size="small" type="primary" @click.stop="replanTask(task.id)">Replan</a-button>
                 <a-button size="small" danger ghost @click.stop="confirmDeleteTask(task)">
-                  <template #icon><DeleteOutlined /></template>
+                  <template #icon><DeleteOutlined></DeleteOutlined></template>
                 </a-button>
               </template>
             </div>
@@ -502,7 +502,7 @@
       <template v-if="diffDrawerTask">
         <!-- Loading state -->
         <div v-if="diffLoading" style="text-align: center; padding: 60px;">
-          <a-spin size="large" />
+          <a-spin size="large"></a-spin>
           <div style="margin-top: 16px;">
             <a-typography-text type="secondary">Loading diff...</a-typography-text>
           </div>
@@ -601,7 +601,7 @@
           />
         </div>
         <a-button @click="scanProjects" :loading="scanning" block>
-          <template #icon><ScanOutlined /></template>
+          <template #icon><ScanOutlined></ScanOutlined></template>
           Scan Projects
         </a-button>
       </div>
