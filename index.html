@@ -795,7 +795,7 @@ const app = createApp({
     // ── Relative Time ───────────────────────────────────────────────
     const relativeTime = (dateStr) => {
       if (!dateStr) return '';
-      const d = dayjs(dateStr);
+      const d = dayjs(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
       if (!d.isValid()) return '';
       const now = dayjs();
       const diffSec = now.diff(d, 'second');
