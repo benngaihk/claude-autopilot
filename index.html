@@ -196,31 +196,6 @@
       overflow: auto;
     }
 
-    /* ── Files table in plan drawer ───────────────────────── */
-    .files-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-    .files-table th {
-      text-align: left;
-      padding: 8px 12px;
-      border-bottom: 1px solid #262626;
-      color: #8c8c8c;
-      font-weight: 600;
-      font-size: 12px;
-    }
-    .files-table td {
-      padding: 8px 12px;
-      border-bottom: 1px solid rgba(255,255,255,0.04);
-      color: #e8e8e8;
-      font-family: 'SF Mono', 'Menlo', monospace;
-      font-size: 12px;
-    }
-    .files-table tr:hover td {
-      background: rgba(255,255,255,0.02);
-    }
-
     /* ── Empty state ──────────────────────────────────────── */
     .empty-state {
       text-align: center;
@@ -418,61 +393,7 @@
           <a-typography-paragraph type="secondary">{{ planDrawerTask.description }}</a-typography-paragraph>
         </div>
 
-        <div v-if="parsedPlan">
-          <!-- Plan Summary -->
-          <div v-if="parsedPlan.summary" style="margin-bottom: 20px;">
-            <a-typography-title :level="5" style="margin-bottom: 8px;">Summary</a-typography-title>
-            <div class="md-content" v-html="renderMarkdown(parsedPlan.summary)"></div>
-          </div>
-
-          <!-- Files to Modify -->
-          <div v-if="parsedPlan.files_to_modify?.length" style="margin-bottom: 20px;">
-            <a-typography-title :level="5" style="margin-bottom: 8px;">Files to Modify</a-typography-title>
-            <div style="border: 1px solid #262626; border-radius: 8px; overflow: hidden;">
-              <table class="files-table">
-                <thead>
-                  <tr>
-                    <th>Path</th>
-                    <th style="width: 90px;">Action</th>
-                    <th>Description</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(f, i) in parsedPlan.files_to_modify" :key="i">
-                    <td>{{ f.path }}</td>
-                    <td>
-                      <a-tag
-                        :color="f.action === 'create' ? 'green' : f.action === 'delete' ? 'red' : 'blue'"
-                        :bordered="false"
-                        style="font-size: 11px;"
-                      >{{ f.action }}</a-tag>
-                    </td>
-                    <td style="color: #8c8c8c;">{{ f.description }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Approach -->
-          <div v-if="parsedPlan.approach" style="margin-bottom: 20px;">
-            <a-typography-title :level="5" style="margin-bottom: 8px;">Approach</a-typography-title>
-            <div class="md-content" v-html="renderMarkdown(parsedPlan.approach)"></div>
-          </div>
-
-          <!-- Risks -->
-          <div v-if="parsedPlan.risks?.length" style="margin-bottom: 20px;">
-            <a-typography-title :level="5" style="margin-bottom: 8px;">Risks</a-typography-title>
-            <a-alert
-              v-for="(risk, i) in parsedPlan.risks"
-              :key="i"
-              :message="risk"
-              type="warning"
-              show-icon
-              style="margin-bottom: 8px;"
-            />
-          </div>
-        </div>
+        <div v-if="planContent" class="md-content" v-html="renderMarkdown(planContent)" style="line-height: 1.7;"></div>
         <div v-else style="text-align: center; padding: 40px;">
           <a-typography-text type="secondary">No plan data available.</a-typography-text>
         </div>
@@ -709,16 +630,10 @@ const app = createApp({
       });
     });
 
-    const parsedPlan = computed(() => {
+    const planContent = computed(() => {
       if (!planDrawerTask.value?.plan) return null;
-      try {
-        const plan = typeof planDrawerTask.value.plan === 'string'
-          ? JSON.parse(planDrawerTask.value.plan)
-          : planDrawerTask.value.plan;
-        return plan;
-      } catch {
-        return null;
-      }
+      // Plan is now stored as plain markdown text
+      return planDrawerTask.value.plan;
     });
 
     const diffLines = computed(() => {
@@ -1268,7 +1183,7 @@ const app = createApp({
       themeConfig,
 
       // Computed
-      filteredTasks, parsedPlan,
+      filteredTasks, planContent,
       diffLines, diffTruncated, diffTotalLines, diffFiles,
 
       // Methods

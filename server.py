@@ -2027,43 +2027,29 @@ async def _run_v2_planning(task_id: str):
 
     await broadcast({"type": "task_planning", "task_id": task_id})
 
-    planning_prompt = f"""You are a quick task planner. Create a brief execution plan for the following task.
+    planning_prompt = f"""You are a task planner. Explore the workspace and create an execution plan.
 
-WORKSPACE: {project_path}
 TASK: {task['title']}
 {('DESCRIPTION: ' + task['description']) if task['description'] else ''}
 
-IMPORTANT: Be FAST. Do NOT deeply explore or read file contents. Only do a quick `ls` or `find` at most to understand the project structure. Then immediately output your plan.
+You are in READ-ONLY mode. Explore the project structure, read key files, and then write a clear plan.
 
-OUTPUT FORMAT: Return ONLY a JSON object wrapped in ```json``` markers:
-```json
-{{
-  "summary": "one-line summary of what this task involves",
-  "files_to_modify": [
-    {{"path": "path/to/file", "action": "modify|create|delete", "description": "brief reason"}}
-  ],
-  "approach": "2-5 bullet points in markdown describing the high-level steps",
-  "risks": ["potential risk or edge case"]
-}}
-```
+Your output should be a markdown plan with:
+1. **Summary** — one paragraph overview of what needs to be done
+2. **Files involved** — list the files that will need to be modified/created/deleted
+3. **Steps** — numbered list of implementation steps
+4. **Risks** — any potential issues or edge cases (optional)
 
-RULES:
-- Spend minimal time exploring — a quick directory listing is enough
-- Keep the approach SHORT: 2-5 bullet points, not paragraphs
-- files_to_modify can be approximate — it's a rough plan, not a spec
-- Do NOT read file contents in detail, do NOT write code
-- Do NOT actually perform the task — only outline HOW to do it
-- Output the JSON immediately after a quick look
-
-Return the JSON plan now:"""
+Keep it concise but informative. Do NOT write any code — only describe the plan."""
 
     try:
         env = {**os.environ}
         env.pop("CLAUDECODE", None)
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", planning_prompt,
-            "--max-turns", "5",
+            "--max-turns", "10",
             "--output-format", "text",
+            "--disallowedTools", "Edit", "Write", "NotebookEdit",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=project_path,
@@ -2071,7 +2057,7 @@ Return the JSON plan now:"""
         )
 
         stdout, stderr = await proc.communicate()
-        output = stdout.decode(errors="replace")
+        output = stdout.decode(errors="replace").strip()
 
         if proc.returncode != 0:
             err_msg = stderr.decode(errors="replace")[:500] or "Planning process failed"
@@ -2079,44 +2065,24 @@ Return the JSON plan now:"""
             await broadcast({"type": "task_failed", "task_id": task_id, "error": err_msg})
             return
 
-        # Parse JSON from the output
-        plan_data = None
-        # Try ```json``` block first
-        json_match = re.search(r"```json\s*\n(.*?)```", output, re.DOTALL)
-        if json_match:
-            try:
-                plan_data = json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                pass
-
-        # Try raw JSON object
-        if not plan_data:
-            obj_match = re.search(r"\{[\s\S]*\"summary\"[\s\S]*\}", output)
-            if obj_match:
-                try:
-                    plan_data = json.loads(obj_match.group(0))
-                except json.JSONDecodeError:
-                    pass
-
-        if not plan_data:
-            err_detail = output.strip()[:1000] if output.strip() else "No output from Claude"
+        if not output:
             _db_update_task(
                 task_id,
                 status="failed",
-                plan_raw=output,
-                error_message=f"Planning failed — Claude output:\n{err_detail}",
+                error_message="Planning produced no output",
             )
-            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Planning did not produce a valid JSON plan"})
+            await broadcast({"type": "task_failed", "task_id": task_id, "error": "Planning produced no output"})
             return
 
+        # Store raw markdown text as the plan (no JSON parsing needed)
         _db_update_task(
             task_id,
             status="review",
-            plan=json.dumps(plan_data, ensure_ascii=False),
+            plan=output,
             plan_raw=output,
             planned_at=datetime.utcnow().isoformat(),
         )
-        await broadcast({"type": "task_plan_ready", "task_id": task_id, "plan": plan_data})
+        await broadcast({"type": "task_plan_ready", "task_id": task_id, "plan": output})
 
     except Exception as e:
         _db_update_task(task_id, status="failed", error_message=str(e))
